@@ -111,8 +111,10 @@ const App = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const hexSize = 60;
-  const viewBoxSize = 600;
+  const hexSize = 35;
+  // Calculate board bounds for centering with padding
+  const boardWidth = 450;
+  const boardHeight = 500;
 
   const fetchBoard = async (randomize: boolean = true) => {
     setLoading(true);
@@ -139,12 +141,14 @@ const App = () => {
     <div
       style={{
         minHeight: "100vh",
+        width: "100vw",
         background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
         padding: "20px",
         fontFamily: "Arial, sans-serif",
+        boxSizing: "border-box",
       }}
     >
-      <div style={{ maxWidth: "100%", margin: "0 auto" }}>
+      <div style={{ width: "100%", margin: "0 auto" }}>
         <h1
           style={{
             color: "white",
@@ -224,7 +228,7 @@ const App = () => {
         {boardData && (
           <div
             style={{
-              background: "white",
+              background: "#2a2a3e",
               borderRadius: "15px",
               padding: "20px",
               boxShadow: "0 10px 30px rgba(0,0,0,0.3)",
@@ -233,9 +237,7 @@ const App = () => {
             <svg
               width="100%"
               height="100%"
-              viewBox={`-${viewBoxSize / 2} -${
-                viewBoxSize / 2
-              } ${viewBoxSize} ${viewBoxSize}`}
+              viewBox={`-80 -80 ${boardWidth} ${boardHeight}`}
               style={{ width: "100%", height: "auto", display: "block" }}
               preserveAspectRatio="xMidYMid meet"
             >
@@ -251,6 +253,7 @@ const App = () => {
                 gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
                 gap: "10px",
                 fontSize: "14px",
+                color: "#e0e0e0",
               }}
             >
               <div>
