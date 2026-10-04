@@ -2,8 +2,12 @@ import pytest
 
 from src.engine import Game, GreedyBot, RandomBot
 from src.engine.game import (
+    A_ACCEPT,
+    A_CONFIRM,
     A_KNIGHT,
     A_MONOPOLY,
+    A_OFFER,
+    A_REJECT,
     A_ROAD,
     A_ROAD_BUILDING,
     A_ROLL,
@@ -16,6 +20,8 @@ from src.engine.game import (
     ROLL,
     SETUP_ROAD,
     SETUP_SETTLE,
+    TRADE_PICK,
+    TRADE_RESPONSE,
     WIN_POINTS,
     action,
 )
@@ -280,7 +286,107 @@ def test_win_statistics_add_up():
     summary = summarize(results, 4)
     assert summary["finished"] == sum(summary["wins"])
     assert sum(count for _, count in summary["winning_moves"]) == summary["finished"]
-    for winner, turns, move, points in results:
+    for winner, turns, move, points, trades in results:
         if winner >= 0:
             assert sum(points) >= WIN_POINTS
     assert play_game_stats(5) == play_game_stats(5)
+
+
+# ---------------------------------------------------------------- player trading
+
+BRICK, LUMBER, ORE, GRAIN, WOOL = range(5)
+
+
+def _trading_game(hands, **kwargs):
+    """A game in the main phase of player 0's turn with the given hands."""
+    game = _after_setup(**kwargs)
+    for r in range(5):
+        game.bank[r] = 19 - sum(hand[r] for hand in hands)
+    game.res = [list(hand) for hand in hands]
+    game.phase = MAIN
+    return game
+
+
+def _offers(game):
+    return {a & 255 for a in game.legal_actions() if a >> 8 == A_OFFER}
+
+
+def _offer(give, get, count=1):
+    return action(A_OFFER, give * 5 + get + 25 * (count - 1))
+
+
+def test_single_acceptor_trades_immediately():
+    game = _trading_game([[2, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
+    game.apply(_offer(BRICK, ORE))
+    assert game.phase == TRADE_RESPONSE
+    assert game.to_move == 1  # only player 1 holds ore, so only they are asked
+    game.apply(action(A_ACCEPT))
+    assert game.phase == MAIN
+    assert game.res[0] == [1, 0, 1, 0, 0]
+    assert game.res[1] == [1, 0, 0, 0, 0]
+    assert game.player_trades == 1
+    check_invariants(game)
+
+
+def test_two_for_one_offer_moves_two_cards():
+    game = _trading_game([[2, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
+    game.apply(_offer(BRICK, ORE, count=2))
+    game.apply(action(A_ACCEPT))
+    assert game.res[0] == [0, 0, 1, 0, 0]
+    assert game.res[1] == [2, 0, 0, 0, 0]
+
+
+def test_proposer_picks_among_several_acceptors():
+    game = _trading_game([[1, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 1, 0, 0], [0, 0, 1, 0, 0]])
+    game.apply(_offer(BRICK, ORE))
+    assert game.to_move == 1
+    game.apply(action(A_ACCEPT))
+    assert game.to_move == 2
+    game.apply(action(A_REJECT))
+    assert game.to_move == 3
+    game.apply(action(A_ACCEPT))
+    assert game.phase == TRADE_PICK
+    assert game.to_move == 0
+    assert {a & 255 for a in game.legal_actions() if a >> 8 == A_CONFIRM} == {1, 3}
+    game.apply(action(A_CONFIRM, 3))
+    assert game.phase == MAIN
+    assert game.res[0] == [0, 0, 1, 0, 0]
+    assert game.res[3] == [1, 0, 0, 0, 0]
+    assert game.res[1] == [0, 0, 1, 0, 0]
+
+
+def test_rejected_offer_changes_nothing_and_cannot_be_repeated():
+    game = _trading_game([[1, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
+    game.apply(_offer(BRICK, ORE))
+    game.apply(action(A_REJECT))
+    assert game.phase == MAIN
+    assert game.res[0] == [1, 0, 0, 0, 0]
+    assert game.res[1] == [0, 0, 1, 0, 0]
+    assert BRICK * 5 + ORE not in _offers(game)
+    assert not game.can_offer(BRICK, 1, ORE)
+
+
+def test_offers_are_capped_per_turn():
+    game = _trading_game([[1, 1, 0, 0, 0], [0, 0, 1, 1, 1], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]], max_offers=2)
+    game.apply(_offer(BRICK, ORE))
+    game.apply(action(A_REJECT))
+    game.apply(_offer(BRICK, GRAIN))
+    game.apply(action(A_REJECT))
+    assert not _offers(game)
+
+
+def test_offers_never_ask_for_the_same_resource_or_for_cards_nobody_has():
+    game = _trading_game([[2, 0, 0, 0, 0], [1, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
+    offers = _offers(game)
+    assert offers == {BRICK * 5 + ORE, BRICK * 5 + ORE + 25}
+
+
+def test_player_trading_can_be_turned_off():
+    game = _trading_game([[2, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]], player_trading=False)
+    assert not _offers(game)
+    assert not game.can_offer(BRICK, 1, ORE)
+
+
+def test_greedy_bots_trade_with_each_other():
+    results = simulate(100, seed=3)
+    assert summarize(results, 4)["avg_player_trades"] > 0

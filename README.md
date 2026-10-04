@@ -8,7 +8,7 @@ A Catan board simulator: a Python API that generates boards and a React app that
 
 ## What it does today
 
-- **Game engine:** plays complete games of Catan from setup to a 10-point win, with computer players, at about 430 games per second on one core
+- **Game engine:** plays complete games of Catan from setup to a 10-point win, with computer players that trade with each other, at about 240 games per second on one core
 - **Board API:** generates a classic 19-hex board in the 3-4-5-4-3 layout and serves it as JSON from FastAPI
 - **Web app:** renders the board as SVG in the browser, with red 6s and 8s and the robber starting on the desert
 
@@ -20,21 +20,22 @@ The engine lives in `backend/src/engine` and is built to finish many games quick
 
 ```bash
 cd backend
-uv run python -m src.engine.simulate --games 20000 --workers 8
+uv run python -m src.engine.simulate --games 100000 --workers 16
 ```
 
 ```
-20000 games, 4 greedy bots, 8 worker(s)
-  time           7.88 s
-  speed          2,539 games/s
-  finished       19977 (99.9%)
-  avg turns      100
-  wins by seat   0: 22.4%  1: 23.8%  2: 26.0%  3: 27.9%
+100000 games, 4 greedy bots, 16 worker(s)
+  time           40.20 s
+  speed          2,488 games/s
+  finished       99924 (99.9%)
+  avg turns      91
+  player trades  7.6 per game
+  wins by seat   1: 21.6%  2: 23.8%  3: 26.4%  4: 28.2%
 ```
 
-That run was on a 16-core Windows desktop. One core does about 430 games per second.
+That run was on a 16-core Windows desktop. One core does about 240 games per second. With `--no-player-trading` it runs about 40% faster (3,472 games per second on 16 workers), and games take 101 turns on average.
 
-Add `--plot ../docs` to save two charts. Over 100,000 games on 16 workers (3,550 games per second), later seats won more often with these bots:
+Add `--plot ../docs` to save two charts. Later seats won more often with these bots:
 
 ![Wins by seat over 99,924 finished games](docs/wins_by_seat.png)
 
@@ -42,15 +43,17 @@ Cities decided most games, and about a fifth ended on a victory point card:
 
 ![How games were won](docs/win_conditions.png)
 
-**Rules covered:** the setup draft, production with bank shortages, the robber and discards on a 7, roads, settlements, cities, all five development cards, ports and bank trades, longest road, largest army, and winning at 10 points.
+**Rules covered:** the setup draft, production with bank shortages, the robber and discards on a 7, roads, settlements, cities, all five development cards, ports and bank trades, trades between players, longest road, largest army, and winning at 10 points.
 
 Rules follow the official CATAN base game rulebook (2020 edition), including playing one development card at any time in your turn, before or after the roll, and keeping 6s and 8s apart. Pass `--no-dev-before-roll` for the house rule that cards wait until after the roll.
 
-**Not covered yet:** trading between players.
+**Trading between players:** on your turn you can offer one or two cards of one resource for one card of another. Players holding the requested card answer in seat order, and if several accept you pick one. Offers are limited to three per turn so games always end.
+
+**Not covered yet:** the official harbour positions (harbours are spaced evenly with shuffled types), and trades of more than three cards.
 
 **Players:**
 
-- `greedy` builds the most valuable thing it can afford and trades with the bank toward its next purchase. About one game in a thousand stalls and is stopped at the turn limit.
+- `greedy` builds the most valuable thing it can afford and trades toward its next purchase, with other players first and the bank second. It accepts a trade when it needs the card offered and can spare the card asked for. About one game in a thousand stalls and is stopped at the turn limit.
 - `random` picks any legal move. Games take about three times as many turns.
 
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.

@@ -4,6 +4,7 @@ from .game import (
     A_CITY,
     A_KNIGHT,
     A_MONOPOLY,
+    A_OFFER,
     A_ROAD,
     A_ROAD_BUILDING,
     A_SETTLE,
@@ -15,6 +16,8 @@ from .game import (
     ROBBER,
     ROLL,
     SETUP_SETTLE,
+    TRADE_PICK,
+    TRADE_RESPONSE,
 )
 from .topology import HEX_NODES, NODE_HEXES
 
@@ -26,6 +29,8 @@ _DEV_COST = (0, 0, 1, 1, 1)
 class RandomBot:
     """Picks uniformly among legal actions. Games are long; useful as a baseline."""
 
+    lists_offers = True
+
     def choose(self, game, actions):
         return actions[game.rng.randrange(len(actions))]
 
@@ -34,8 +39,14 @@ class GreedyBot:
     """Builds the most valuable thing it can afford each turn.
 
     Priority: city, settlement, knight, road (only when it has nowhere to
-    settle), development card, then bank trades toward its next purchase.
+    settle), development card, then trades toward its next purchase: first
+    with other players, then with the bank.
+
+    It accepts a trade when it needs the card on offer and can spare the card
+    asked for, unless the proposer is two points from winning.
     """
+
+    lists_offers = False  # it builds its own offers with Game.can_offer
 
     def choose(self, game, actions):
         if len(actions) == 1:
@@ -50,6 +61,11 @@ class GreedyBot:
         if phase == DISCARD:
             hand = game.res[game.discarder]
             return max(actions, key=lambda a: hand[a & 255])
+        if phase == TRADE_RESPONSE:
+            return self._respond(game, actions)
+        if phase == TRADE_PICK:
+            # Trade with whoever is furthest from winning; the last action cancels.
+            return min(actions[:-1], key=lambda a: game.victory_points(a & 255))
         if phase == SETUP_SETTLE:
             return max(actions, key=lambda a: self._node_value(game, a & 255))
         # SETUP_ROAD and FREE_ROAD
@@ -59,6 +75,32 @@ class GreedyBot:
     def _node_value(game, node):
         resources = {game.hex_res[h] for h in NODE_HEXES[node] if game.hex_res[h] >= 0}
         return game.node_pips[node] + 0.5 * len(resources)
+
+    @staticmethod
+    def _goal(game, p):
+        """The cost of what p is saving for, or None."""
+        if game.cities_left[p] and game.settlements[p]:
+            return _CITY_COST
+        if game.settlements_left[p] and game.settlement_spots(p):
+            return _SETTLEMENT_COST
+        if game.dev_deck:
+            return _DEV_COST
+        return None
+
+    def _respond(self, game, actions):
+        accept, reject = actions
+        proposer = game.current
+        if game.victory_points(proposer) >= 8:
+            return reject
+        me = game.responder
+        goal = self._goal(game, me)
+        if goal is None:
+            return reject
+        give, _, get = game.offer  # the proposer gives `give` and wants `get`
+        hand = game.res[me]
+        if hand[give] < goal[give] and hand[get] - 1 >= goal[get]:
+            return accept
+        return reject
 
     def _roll(self, game, actions):
         # Play a knight before rolling only to move the robber off our own hex.
@@ -168,6 +210,14 @@ class GreedyBot:
                     for a in monopoly:
                         if (a & 255) == wanted:
                             return a
+            # Other players are cheaper than the bank: offer one card first, then two.
+            if game.offers_left and game.player_trading:
+                for count in (1, 2):
+                    for give in range(5):
+                        if hand[give] - count >= goal[give]:
+                            for get in range(5):
+                                if missing[get] and game.can_offer(give, count, get):
+                                    return (A_OFFER << 8) | (give * 5 + get + 25 * (count - 1))
             rates = game.rates[p]
             for a in trades:
                 give, get = divmod(a & 255, 5)
