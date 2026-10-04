@@ -12,9 +12,11 @@ Rules covered: setup draft, production with bank shortages, the robber and
 discards, roads, settlements, cities, development cards, ports and bank trades,
 trades between players, longest road, largest army, and winning at 10 points.
 
-Trades between players are offers of one or two cards of one resource for one
-card of another. Everyone holding the requested card answers in seat order; if
-several accept, the proposer picks. Offers per turn are capped so games end.
+Trades between players are offers of any bundle of cards for any other bundle,
+built with ``offer_action(give, get)``. Everyone holding the requested cards
+answers in seat order; if several accept, the proposer picks. There is no limit
+on the number of offers in a turn, but an offer that was just turned down
+cannot be repeated until a trade goes through or the turn ends.
 
 Rules follow the official CATAN base game rulebook and almanac (2020 edition).
 """
@@ -79,6 +81,47 @@ def action(kind, arg=0):
     return (kind << 8) | arg
 
 
+def kind_of(act):
+    """The action kind. Use this rather than ``act >> 8`` when offers may be present."""
+    return (act >> 8) & 255
+
+
+def offer_action(give, get):
+    """An offer of ``give`` for ``get``, each a list of five card counts by resource."""
+    return (
+        (
+            give[0] | give[1] << 5 | give[2] << 10 | give[3] << 15 | give[4] << 20
+            | get[0] << 25 | get[1] << 30 | get[2] << 35 | get[3] << 40 | get[4] << 45
+        ) << 16
+    ) | (A_OFFER << 8)
+
+
+def decode_offer(act):
+    """The (give, get) card counts of an offer action."""
+    payload = act >> 16
+    return (
+        [(payload >> (5 * r)) & 31 for r in range(5)],
+        [(payload >> (25 + 5 * r)) & 31 for r in range(5)],
+    )
+
+
+def _unit(r, count=1):
+    cards = [0] * 5
+    cards[r] = count
+    return cards
+
+
+# One-for-one and two-for-one offers, listed by legal_actions for bots that do
+# not build their own: _SIMPLE_OFFERS[give][get] = (one-for-one, two-for-one).
+_SIMPLE_OFFERS = [
+    [
+        (offer_action(_unit(i), _unit(j)), offer_action(_unit(i, 2), _unit(j))) if i != j else None
+        for j in range(5)
+    ]
+    for i in range(5)
+]
+
+
 class Game:
     __slots__ = (
         "n", "rng", "max_turns", "dev_before_roll", "player_trading", "max_offers",
@@ -96,7 +139,7 @@ class Game:
     )
 
     def __init__(self, num_players=4, seed=None, max_turns=2000, dev_before_roll=True,
-                 player_trading=True, max_offers=3):
+                 player_trading=True, max_offers=None):
         self.n = n = num_players
         self.rng = rng = random.Random(seed)
         self.max_turns = max_turns
@@ -104,12 +147,13 @@ class Game:
         # Pass False for the house rule that cards wait until after it.
         self.dev_before_roll = dev_before_roll
         # Rulebook: on your turn you may trade with any player; the others may
-        # only trade with you. max_offers caps proposals per turn.
+        # only trade with you. max_offers optionally caps proposals per turn;
+        # None means no limit.
         self.player_trading = player_trading
         self.max_offers = max_offers
-        self.offers_left = max_offers
-        self.offers_made = set()
-        self.offer = None  # (give resource, give count, get resource)
+        self.offers_left = -1 if max_offers is None else max_offers
+        self.offers_made = set()  # offers turned down since the last trade
+        self.offer = None  # (give counts, get counts)
         self.player_trades = 0
         self.responders = []
         self.responder_index = 0
@@ -238,24 +282,47 @@ class Game:
     def settlement_spots(self, p):
         return [node for node in self.touch[p] if self._free_spot(node)]
 
-    def can_offer(self, give, count, get):
-        """Whether the current player may offer ``count`` of ``give`` for one ``get``."""
-        if not (self.offers_left and self.player_trading) or give == get:
-            return False
+    def can_offer(self, give, get):
+        """Whether the current player may offer the cards ``give`` for the cards ``get``.
+
+        Both sides must hand over at least one card (no gifts), no resource may
+        appear on both sides, and someone must hold everything asked for.
+        """
+        return bool(self.try_offer(give, get))
+
+    def try_offer(self, give, get):
+        """The offer action for ``give`` and ``get`` if it is legal now, else 0."""
+        if not (self.offers_left and self.player_trading) or self.phase != MAIN:
+            return 0
         p = self.current
-        if self.res[p][give] < count or (give * 5 + get + 25 * (count - 1)) in self.offers_made:
-            return False
+        hand = self.res[p]
+        giving = getting = 0
+        for r in range(5):
+            g, t = give[r], get[r]
+            if g > hand[r] or (g and t):
+                return 0
+            giving += g
+            getting += t
+        if not giving or not getting:
+            return 0
+        act = offer_action(give, get)
+        if act in self.offers_made:
+            return 0
         res = self.res
         for q in range(self.n):
-            if q != p and res[q][get]:
-                return True
-        return False
+            if q != p:
+                other = res[q]
+                if (other[0] >= get[0] and other[1] >= get[1] and other[2] >= get[2]
+                        and other[3] >= get[3] and other[4] >= get[4]):
+                    return act
+        return 0
 
     def legal_actions(self, offers=True):
         """Every legal action for the player to move.
 
-        Trade offers are a large family, so a bot that builds its own with
-        ``can_offer`` can pass ``offers=False`` to leave them out of the list.
+        Trade offers are unbounded, so only one-for-one and two-for-one
+        offers are listed. Build anything else with ``offer_action`` after
+        checking ``can_offer``. Pass ``offers=False`` to list none.
         """
         phase = self.phase
         p = self.current
@@ -323,13 +390,14 @@ class Game:
             for i in range(5):
                 have = hand[i]
                 if have:
+                    row = _SIMPLE_OFFERS[i]
                     for j in range(5):
                         if j != i and wanted[j]:
-                            arg = i * 5 + j
-                            if arg not in made:
-                                acts.append((A_OFFER << 8) | arg)
-                            if have >= 2 and arg + 25 not in made:
-                                acts.append((A_OFFER << 8) | (arg + 25))
+                            one, two = row[j]
+                            if one not in made:
+                                acts.append(one)
+                            if have >= 2 and two not in made:
+                                acts.append(two)
 
         acts.append(A_END << 8)
         return acts
@@ -373,7 +441,7 @@ class Game:
     # ------------------------------------------------------------------ actions
 
     def apply(self, act):
-        kind = act >> 8
+        kind = (act >> 8) & 255
         arg = act & 255
         p = self.current
 
@@ -407,7 +475,7 @@ class Game:
             self.res[p][get] += 1
             self.bank[get] -= 1
         elif kind == A_OFFER:
-            self._offer(p, arg)
+            self._offer(p, act)
         elif kind == A_ACCEPT:
             self.acceptors.append(self.responder)
             self._next_responder(p)
@@ -473,16 +541,23 @@ class Game:
         bank[3] += grain
         bank[4] += wool
 
-    def _offer(self, p, arg):
-        count = arg // 25 + 1
-        give, get = divmod(arg % 25, 5)
-        self.offers_left -= 1
-        self.offers_made.add(arg)
-        self.offer = (give, count, get)
+    def _offer(self, p, act):
+        give, get = decode_offer(act)
+        if self.offers_left > 0:
+            self.offers_left -= 1
+        self.offers_made.add(act)
+        self.offer = (give, get)
         res = self.res
         n = self.n
-        # Only players holding the requested card are asked, in seat order.
-        self.responders = [q for q in ((p + k) % n for k in range(1, n)) if res[q][get]]
+        # Only players holding everything asked for are asked, in seat order.
+        g0, g1, g2, g3, g4 = get
+        responders = []
+        for k in range(1, n):
+            q = (p + k) % n
+            other = res[q]
+            if other[0] >= g0 and other[1] >= g1 and other[2] >= g2 and other[3] >= g3 and other[4] >= g4:
+                responders.append(q)
+        self.responders = responders
         self.acceptors = []
         self.responder_index = 0
         self.responder = self.responders[0]
@@ -503,13 +578,14 @@ class Game:
             self.phase = TRADE_PICK
 
     def _swap(self, p, q):
-        give, count, get = self.offer
-        res = self.res
-        res[p][give] -= count
-        res[q][give] += count
-        res[q][get] -= 1
-        res[p][get] += 1
+        give, get = self.offer
+        mine = self.res[p]
+        theirs = self.res[q]
+        for r in range(5):
+            mine[r] += get[r] - give[r]
+            theirs[r] += give[r] - get[r]
         self.player_trades += 1
+        self.offers_made.clear()  # hands changed, so earlier offers may be worth repeating
 
     def _roll(self):
         rng = self.rng
@@ -684,7 +760,7 @@ class Game:
                 hand[card] += new[card]
                 new[card] = 0
         self.dev_played = False
-        self.offers_left = self.max_offers
+        self.offers_left = -1 if self.max_offers is None else self.max_offers
         self.offers_made.clear()
         self.current = (p + 1) % self.n
         self.phase = ROLL

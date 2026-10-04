@@ -23,20 +23,20 @@ OTHER_MOVE = "Other"
 POINT_SOURCES = ("Settlements", "Cities", "Victory point cards", "Longest Road", "Largest Army")
 
 
-def play_game(seed, num_players=4, bot="greedy", max_turns=2000, dev_before_roll=True, player_trading=True):
+def play_game(seed, num_players=4, bot="greedy", max_turns=2000, dev_before_roll=True, player_trading=True, max_offers=None):
     """Play one full game. Returns (winner, turns, final points per player)."""
-    game, _ = _run(seed, num_players, bot, max_turns, dev_before_roll, player_trading)
+    game, _ = _run(seed, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers)
     return game.winner, game.turn, [game.victory_points(p) for p in range(num_players)]
 
 
-def play_game_stats(seed, num_players=4, bot="greedy", max_turns=2000, dev_before_roll=True, player_trading=True):
+def play_game_stats(seed, num_players=4, bot="greedy", max_turns=2000, dev_before_roll=True, player_trading=True, max_offers=None):
     """Play one game and describe how it was won.
 
     Returns (winner, turns, winning move, points by source, player trades),
     where points by source follows POINT_SOURCES. Unfinished games return
     (-1, turns, None, None, player trades).
     """
-    game, last = _run(seed, num_players, bot, max_turns, dev_before_roll, player_trading)
+    game, last = _run(seed, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers)
     w = game.winner
     if w < 0:
         return -1, game.turn, None, None, game.player_trades
@@ -47,11 +47,11 @@ def play_game_stats(seed, num_players=4, bot="greedy", max_turns=2000, dev_befor
         2 if game.longest_road == w else 0,
         2 if game.largest_army == w else 0,
     )
-    return w, game.turn, WINNING_MOVES.get(last >> 8, OTHER_MOVE), points, game.player_trades
+    return w, game.turn, WINNING_MOVES.get((last >> 8) & 255, OTHER_MOVE), points, game.player_trades
 
 
-def _run(seed, num_players, bot, max_turns, dev_before_roll, player_trading):
-    game = Game(num_players, seed, max_turns, dev_before_roll, player_trading)
+def _run(seed, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers):
+    game = Game(num_players, seed, max_turns, dev_before_roll, player_trading, max_offers)
     player = BOTS[bot]()
     choose = player.choose
     offers = player.lists_offers
@@ -65,18 +65,18 @@ def _run(seed, num_players, bot, max_turns, dev_before_roll, player_trading):
 
 
 def _play_batch(args):
-    seeds, num_players, bot, max_turns, dev_before_roll, player_trading = args
-    return [play_game_stats(seed, num_players, bot, max_turns, dev_before_roll, player_trading) for seed in seeds]
+    seeds, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers = args
+    return [play_game_stats(seed, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers) for seed in seeds]
 
 
-def simulate(games, num_players=4, bot="greedy", workers=1, seed=0, max_turns=2000, dev_before_roll=True, player_trading=True):
+def simulate(games, num_players=4, bot="greedy", workers=1, seed=0, max_turns=2000, dev_before_roll=True, player_trading=True, max_offers=None):
     """Play ``games`` games. Returns one play_game_stats tuple per game."""
     seeds = range(seed, seed + games)
     if workers <= 1:
-        return _play_batch((seeds, num_players, bot, max_turns, dev_before_roll, player_trading))
+        return _play_batch((seeds, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers))
     chunk = max(1, games // (workers * 4))
     batches = [
-        (seeds[i:i + chunk], num_players, bot, max_turns, dev_before_roll, player_trading) for i in range(0, games, chunk)
+        (seeds[i:i + chunk], num_players, bot, max_turns, dev_before_roll, player_trading, max_offers) for i in range(0, games, chunk)
     ]
     with Pool(workers) as pool:
         results = []
@@ -212,13 +212,15 @@ def main():
     parser.add_argument("--no-dev-before-roll", action="store_true",
                         help="house rule: development cards may only be played after rolling")
     parser.add_argument("--no-player-trading", action="store_true", help="bank and port trades only")
+    parser.add_argument("--max-offers", type=int, default=None,
+                        help="cap trade offers per turn (default: no limit); a low cap runs faster")
     parser.add_argument("--plot", metavar="DIR",
                         help="save wins_by_seat.png and win_conditions.png here (needs matplotlib)")
     args = parser.parse_args()
 
     start = time.perf_counter()
     results = simulate(args.games, args.players, args.bot, args.workers, args.seed, args.max_turns,
-                       not args.no_dev_before_roll, not args.no_player_trading)
+                       not args.no_dev_before_roll, not args.no_player_trading, args.max_offers)
     elapsed = time.perf_counter() - start
     s = summarize(results, args.players)
     n = s["finished"]

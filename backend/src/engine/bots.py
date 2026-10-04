@@ -4,7 +4,6 @@ from .game import (
     A_CITY,
     A_KNIGHT,
     A_MONOPOLY,
-    A_OFFER,
     A_ROAD,
     A_ROAD_BUILDING,
     A_SETTLE,
@@ -18,6 +17,7 @@ from .game import (
     SETUP_SETTLE,
     TRADE_PICK,
     TRADE_RESPONSE,
+
 )
 from .topology import HEX_NODES, NODE_HEXES
 
@@ -42,8 +42,14 @@ class GreedyBot:
     settle), development card, then trades toward its next purchase: first
     with other players, then with the bank.
 
-    It accepts a trade when it needs the card on offer and can spare the card
-    asked for, unless the proposer is two points from winning.
+    Its offers start generous to itself and get sweeter. It asks for
+    everything it is missing in one bundle, first for an equal number of spare
+    cards and then adding more, each offer a superset of the last, up to two
+    cards for one. Then it asks for single cards, paying up to three.
+
+    It accepts a trade that moves it closer to its own next purchase, or that
+    leaves it no further away with more cards in hand, unless the proposer is
+    two points from winning.
     """
 
     lists_offers = False  # it builds its own offers with Game.can_offer
@@ -96,11 +102,63 @@ class GreedyBot:
         goal = self._goal(game, me)
         if goal is None:
             return reject
-        give, _, get = game.offer  # the proposer gives `give` and wants `get`
+        give, get = game.offer  # the proposer gives `give` and wants `get`
         hand = game.res[me]
-        if hand[give] < goal[give] and hand[get] - 1 >= goal[get]:
+        before = after = gained = 0
+        for r in range(5):
+            have = hand[r]
+            then = have + give[r] - get[r]
+            if goal[r] > have:
+                before += goal[r] - have
+            if goal[r] > then:
+                after += goal[r] - then
+            gained += give[r] - get[r]
+        if after < before:
+            return accept
+        if after == before and gained > 0 and sum(hand) + gained <= 7:
             return accept
         return reject
+
+    @staticmethod
+    def _next_offer(game, hand, goal, missing):
+        """The best offer not yet turned down this turn, or None."""
+        spare = [max(0, hand[r] - goal[r]) for r in range(5)]
+        total_spare = sum(spare)
+        if not total_spare:
+            return None
+        need = sum(missing)
+        try_offer = game.try_offer
+        order = sorted(range(5), key=lambda r: -spare[r])
+
+        # Everything missing at once. Start one-for-one and keep adding spare
+        # cards, so each offer is a superset of the last, up to two-for-one.
+        for size in range(need, min(total_spare, 2 * need) + 1):
+            give = [0] * 5
+            left = size
+            for r in order:
+                take = spare[r] if spare[r] < left else left
+                give[r] = take
+                left -= take
+                if not left:
+                    break
+            offer = try_offer(give, missing)
+            if offer:
+                return offer
+
+        # One missing card at a time from the biggest pile, paying up to three.
+        if need > 1:
+            biggest = order[0]
+            for count in range(1, min(spare[biggest], 3) + 1):
+                give = [0] * 5
+                give[biggest] = count
+                for t in range(5):
+                    if missing[t] and t != biggest:
+                        get = [0] * 5
+                        get[t] = 1
+                        offer = try_offer(give, get)
+                        if offer:
+                            return offer
+        return None
 
     def _roll(self, game, actions):
         # Play a knight before rolling only to move the robber off our own hex.
@@ -210,14 +268,11 @@ class GreedyBot:
                     for a in monopoly:
                         if (a & 255) == wanted:
                             return a
-            # Other players are cheaper than the bank: offer one card first, then two.
-            if game.offers_left and game.player_trading:
-                for count in (1, 2):
-                    for give in range(5):
-                        if hand[give] - count >= goal[give]:
-                            for get in range(5):
-                                if missing[get] and game.can_offer(give, count, get):
-                                    return (A_OFFER << 8) | (give * 5 + get + 25 * (count - 1))
+            # Other players are cheaper than the bank, so ask them first.
+            if game.offers_left and game.player_trading and any(missing):
+                offer = self._next_offer(game, hand, goal, missing)
+                if offer is not None:
+                    return offer
             rates = game.rates[p]
             for a in trades:
                 give, get = divmod(a & 255, 5)

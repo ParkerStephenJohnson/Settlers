@@ -24,6 +24,9 @@ from src.engine.game import (
     TRADE_RESPONSE,
     WIN_POINTS,
     action,
+    decode_offer,
+    kind_of,
+    offer_action,
 )
 from src.engine.simulate import play_game, play_game_stats, simulate, summarize
 from src.engine.topology import (
@@ -297,6 +300,11 @@ def test_win_statistics_add_up():
 BRICK, LUMBER, ORE, GRAIN, WOOL = range(5)
 
 
+def cards(**counts):
+    names = ("brick", "lumber", "ore", "grain", "wool")
+    return [counts.get(name, 0) for name in names]
+
+
 def _trading_game(hands, **kwargs):
     """A game in the main phase of player 0's turn with the given hands."""
     game = _after_setup(**kwargs)
@@ -307,38 +315,52 @@ def _trading_game(hands, **kwargs):
     return game
 
 
-def _offers(game):
-    return {a & 255 for a in game.legal_actions() if a >> 8 == A_OFFER}
+def _listed_offers(game):
+    return [decode_offer(a) for a in game.legal_actions() if kind_of(a) == A_OFFER]
 
 
-def _offer(give, get, count=1):
-    return action(A_OFFER, give * 5 + get + 25 * (count - 1))
+EMPTY = cards()
 
 
 def test_single_acceptor_trades_immediately():
-    game = _trading_game([[2, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
-    game.apply(_offer(BRICK, ORE))
+    game = _trading_game([cards(brick=2), cards(ore=1), EMPTY, EMPTY])
+    game.apply(offer_action(cards(brick=1), cards(ore=1)))
     assert game.phase == TRADE_RESPONSE
     assert game.to_move == 1  # only player 1 holds ore, so only they are asked
     game.apply(action(A_ACCEPT))
     assert game.phase == MAIN
-    assert game.res[0] == [1, 0, 1, 0, 0]
-    assert game.res[1] == [1, 0, 0, 0, 0]
+    assert game.res[0] == cards(brick=1, ore=1)
+    assert game.res[1] == cards(brick=1)
     assert game.player_trades == 1
     check_invariants(game)
 
 
-def test_two_for_one_offer_moves_two_cards():
-    game = _trading_game([[2, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
-    game.apply(_offer(BRICK, ORE, count=2))
+def test_a_big_bundle_trade_moves_every_card():
+    game = _trading_game([cards(brick=3, wool=2, lumber=1), cards(ore=2, grain=4), EMPTY, EMPTY])
+    give, get = cards(brick=3, wool=2), cards(ore=2, grain=3)
+    assert game.can_offer(give, get)
+    game.apply(offer_action(give, get))
     game.apply(action(A_ACCEPT))
-    assert game.res[0] == [0, 0, 1, 0, 0]
-    assert game.res[1] == [2, 0, 0, 0, 0]
+    assert game.res[0] == cards(lumber=1, ore=2, grain=3)
+    assert game.res[1] == cards(brick=3, wool=2, grain=1)
+    check_invariants(game)
+
+
+def test_offer_encoding_round_trips_up_to_nineteen_cards():
+    give, get = [19, 0, 7, 0, 1], [0, 19, 0, 12, 0]
+    assert decode_offer(offer_action(give, get)) == (give, get)
+    assert kind_of(offer_action(give, get)) == A_OFFER
+
+
+def test_only_players_holding_the_whole_bundle_are_asked():
+    game = _trading_game([cards(brick=1), cards(ore=1), cards(ore=1, grain=1), cards(grain=1)])
+    game.apply(offer_action(cards(brick=1), cards(ore=1, grain=1)))
+    assert game.responders == [2]
 
 
 def test_proposer_picks_among_several_acceptors():
-    game = _trading_game([[1, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 1, 0, 0], [0, 0, 1, 0, 0]])
-    game.apply(_offer(BRICK, ORE))
+    game = _trading_game([cards(brick=1), cards(ore=1), cards(ore=1), cards(ore=1)])
+    game.apply(offer_action(cards(brick=1), cards(ore=1)))
     assert game.to_move == 1
     game.apply(action(A_ACCEPT))
     assert game.to_move == 2
@@ -347,46 +369,106 @@ def test_proposer_picks_among_several_acceptors():
     game.apply(action(A_ACCEPT))
     assert game.phase == TRADE_PICK
     assert game.to_move == 0
-    assert {a & 255 for a in game.legal_actions() if a >> 8 == A_CONFIRM} == {1, 3}
+    assert {a & 255 for a in game.legal_actions() if kind_of(a) == A_CONFIRM} == {1, 3}
     game.apply(action(A_CONFIRM, 3))
     assert game.phase == MAIN
-    assert game.res[0] == [0, 0, 1, 0, 0]
-    assert game.res[3] == [1, 0, 0, 0, 0]
-    assert game.res[1] == [0, 0, 1, 0, 0]
+    assert game.res[0] == cards(ore=1)
+    assert game.res[3] == cards(brick=1)
+    assert game.res[1] == cards(ore=1)
 
 
 def test_rejected_offer_changes_nothing_and_cannot_be_repeated():
-    game = _trading_game([[1, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
-    game.apply(_offer(BRICK, ORE))
+    game = _trading_game([cards(brick=1), cards(ore=1), EMPTY, EMPTY])
+    give, get = cards(brick=1), cards(ore=1)
+    game.apply(offer_action(give, get))
     game.apply(action(A_REJECT))
     assert game.phase == MAIN
-    assert game.res[0] == [1, 0, 0, 0, 0]
-    assert game.res[1] == [0, 0, 1, 0, 0]
-    assert BRICK * 5 + ORE not in _offers(game)
-    assert not game.can_offer(BRICK, 1, ORE)
+    assert game.res[0] == cards(brick=1)
+    assert game.res[1] == cards(ore=1)
+    assert (give, get) not in _listed_offers(game)
+    assert not game.can_offer(give, get)
 
 
-def test_offers_are_capped_per_turn():
-    game = _trading_game([[1, 1, 0, 0, 0], [0, 0, 1, 1, 1], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]], max_offers=2)
-    game.apply(_offer(BRICK, ORE))
+def test_a_rejected_offer_can_be_made_again_after_a_trade():
+    game = _trading_game([cards(brick=2, wool=1), cards(ore=1, grain=1), EMPTY, EMPTY])
+    first = (cards(brick=1), cards(ore=1))
+    game.apply(offer_action(*first))
     game.apply(action(A_REJECT))
-    game.apply(_offer(BRICK, GRAIN))
+    assert not game.can_offer(*first)
+    game.apply(offer_action(cards(wool=1), cards(grain=1)))
+    game.apply(action(A_ACCEPT))
+    assert game.can_offer(*first)
+
+
+def test_there_is_no_limit_on_offers_in_a_turn():
+    game = _trading_game([cards(brick=19), cards(ore=1), EMPTY, EMPTY])
+    for count in range(1, 20):
+        offer = offer_action(cards(brick=count), cards(ore=1))
+        assert game.can_offer(cards(brick=count), cards(ore=1))
+        game.apply(offer)
+        game.apply(action(A_REJECT))
+    assert game.phase == MAIN
+    assert game.offers_left  # still open
+
+
+def test_offers_can_be_capped_per_turn():
+    game = _trading_game([cards(brick=1, lumber=1), cards(ore=1, grain=1, wool=1), EMPTY, EMPTY], max_offers=2)
+    game.apply(offer_action(cards(brick=1), cards(ore=1)))
     game.apply(action(A_REJECT))
-    assert not _offers(game)
+    game.apply(offer_action(cards(brick=1), cards(grain=1)))
+    game.apply(action(A_REJECT))
+    assert not _listed_offers(game)
+    assert not game.can_offer(cards(lumber=1), cards(wool=1))
 
 
-def test_offers_never_ask_for_the_same_resource_or_for_cards_nobody_has():
-    game = _trading_game([[2, 0, 0, 0, 0], [1, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]])
-    offers = _offers(game)
-    assert offers == {BRICK * 5 + ORE, BRICK * 5 + ORE + 25}
+def test_gifts_and_same_resource_swaps_are_not_allowed():
+    game = _trading_game([cards(brick=3, wool=1), cards(brick=1, ore=1), EMPTY, EMPTY])
+    assert not game.can_offer(cards(brick=1), EMPTY)  # a gift
+    assert not game.can_offer(EMPTY, cards(ore=1))  # asking for a gift
+    assert not game.can_offer(cards(brick=2), cards(brick=1))  # same resource both ways
+    assert not game.can_offer(cards(brick=1, wool=1), cards(wool=1, ore=1))
+    assert not game.can_offer(cards(brick=4), cards(ore=1))  # more than the hand holds
+    assert not game.can_offer(cards(brick=1), cards(grain=1))  # nobody has grain
+
+
+def test_listed_offers_are_one_and_two_for_one():
+    game = _trading_game([cards(brick=2), cards(brick=1, ore=1), EMPTY, EMPTY])
+    assert sorted(_listed_offers(game)) == sorted([
+        (cards(brick=1), cards(ore=1)),
+        (cards(brick=2), cards(ore=1)),
+    ])
 
 
 def test_player_trading_can_be_turned_off():
-    game = _trading_game([[2, 0, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]], player_trading=False)
-    assert not _offers(game)
-    assert not game.can_offer(BRICK, 1, ORE)
+    game = _trading_game([cards(brick=2), cards(ore=1), EMPTY, EMPTY], player_trading=False)
+    assert not _listed_offers(game)
+    assert not game.can_offer(cards(brick=1), cards(ore=1))
 
 
 def test_greedy_bots_trade_with_each_other():
     results = simulate(100, seed=3)
     assert summarize(results, 4)["avg_player_trades"] > 0
+
+
+def test_greedy_bot_offers_a_bundle_for_everything_it_is_missing():
+    # Player 0 has a settlement to upgrade: a city costs 3 ore and 2 grain.
+    game = _trading_game([cards(wool=6, lumber=2), cards(ore=3, grain=2), EMPTY, EMPTY])
+    offer = GreedyBot().choose(game, game.legal_actions(False))
+    assert kind_of(offer) == A_OFFER
+    give, get = decode_offer(offer)
+    assert get == cards(ore=3, grain=2)
+    assert give == cards(wool=5)
+
+
+def test_greedy_bot_sweetens_a_rejected_offer_with_a_superset():
+    game = _trading_game([cards(wool=6, lumber=2), cards(ore=3, grain=2), EMPTY, EMPTY])
+    bot = GreedyBot()
+    first = bot.choose(game, game.legal_actions(False))
+    game.apply(first)
+    game.apply(action(A_REJECT))
+    second = bot.choose(game, game.legal_actions(False))
+    assert kind_of(second) == A_OFFER
+    give_1, get_1 = decode_offer(first)
+    give_2, get_2 = decode_offer(second)
+    assert get_2 == get_1
+    assert all(b >= a for a, b in zip(give_1, give_2)) and sum(give_2) == sum(give_1) + 1
