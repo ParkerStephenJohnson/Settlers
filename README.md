@@ -34,6 +34,10 @@ uv run python -m src.engine.simulate --games 20000 --workers 8
 
 That run was on a 16-core Windows desktop. One core does about 430 games per second.
 
+Add `--plot wins.png` to save a chart of wins by seat. Over 100,000 games on 16 workers (3,718 games per second), later seats won more often with these bots:
+
+![Wins by seat over 99,873 finished games](docs/wins_by_seat.png)
+
 **Rules covered:** the setup draft, production with bank shortages, the robber and discards on a 7, roads, settlements, cities, all five development cards, ports and bank trades, longest road, largest army, and winning at 10 points.
 
 **Not covered yet:** trading between players, and the rule against placing 6s and 8s next to each other.

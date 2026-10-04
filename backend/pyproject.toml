@@ -19,5 +19,6 @@ packages = ["src"]
 [dependency-groups]
 dev = [
     "pytest>=7.4.3",
-    "httpx>=0.25.1",  # For testing FastAPI endpoints
+    "httpx>=0.25.1", # For testing FastAPI endpoints
+    "matplotlib>=3.9.4",
 ]
