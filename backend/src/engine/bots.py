@@ -1,6 +1,8 @@
 """Computer players. A bot is anything with ``choose(game, actions) -> action``."""
 from .game import (
     A_BUY,
+    A_EMBARGO,
+    A_LIFT,
     A_CITY,
     A_KNIGHT,
     A_MONOPOLY,
@@ -32,23 +34,62 @@ class RandomBot:
 
     On its turn it treats "propose a trade" as one more option alongside its
     other legal actions. A proposal is a random bundle of its own cards for a
-    random bundle of one opponent's cards, of any size. It accepts or refuses
-    other players' offers on a coin flip.
+    random bundle of one opponent's cards, of any size. Changing an embargo is
+    another option. Offered a trade, it accepts, refuses or counters with
+    random terms, each a third of the time.
     """
 
     lists_offers = False  # it builds its own offers
 
+    def __init__(self, embargoes=True):
+        self.embargoes = embargoes  # False leaves embargoes to someone else
+
     def choose(self, game, actions):
         rng = game.rng
         count = len(actions)
-        if game.phase == MAIN and game.offers_left and game.player_trading:
-            pick = rng.randrange(count + 1)
+        phase = game.phase
+        if phase == MAIN and game.player_trading:
+            # Two more options: propose a trade, or change an embargo.
+            pick = rng.randrange(count + (2 if self.embargoes else 1))
             if pick < count:
                 return actions[pick]
-            offer = self._random_offer(game, rng)
-            if offer:
-                return offer
+            if pick == count:
+                if game.offers_left:
+                    offer = self._random_offer(game, rng)
+                    if offer:
+                        return offer
+            else:
+                p = game.current
+                q = (p + 1 + rng.randrange(game.n - 1)) % game.n
+                kind = A_LIFT if (game.embargo[p] >> q) & 1 else A_EMBARGO
+                return (kind << 8) | q
+        elif phase == TRADE_RESPONSE:
+            # Accept, refuse, or counter with random terms.
+            pick = rng.randrange(3)
+            if pick < 2:
+                return actions[pick]
+            counter = self._random_counter(game, rng)
+            if counter:
+                return counter
         return actions[rng.randrange(count)]
+
+    @staticmethod
+    def _random_counter(game, rng):
+        theirs = game.res[game.current]
+        mine = game.res[game.responder]
+        give = [rng.randrange(theirs[r] + 1) for r in range(5)]
+        if not any(give):
+            held = [r for r in range(5) if theirs[r]]
+            if not held:
+                return 0
+            give[held[rng.randrange(len(held))]] = 1
+        get = [0 if give[r] else rng.randrange(mine[r] + 1) for r in range(5)]
+        if not any(get):
+            spare = [r for r in range(5) if not give[r] and mine[r]]
+            if not spare:
+                return 0
+            get[spare[rng.randrange(len(spare))]] = 1
+        return game.try_counter(give, get)
 
     @staticmethod
     def _random_offer(game, rng):
@@ -56,7 +97,7 @@ class RandomBot:
         hand = game.res[p]
         if not any(hand):
             return 0
-        others = [q for q in range(game.n) if q != p and any(game.res[q])]
+        others = [q for q in range(game.n) if q != p and any(game.res[q]) and not game.embargoed(p, q)]
         if not others:
             return 0
         theirs = game.res[others[rng.randrange(len(others))]]

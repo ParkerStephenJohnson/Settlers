@@ -18,6 +18,11 @@ answers in seat order; if several accept, the proposer picks. There is no limit
 on the number of offers in a turn, but an offer that was just turned down
 cannot be repeated until a trade goes through or the turn ends.
 
+Two table conventions are modelled as well. A responder may answer an offer
+with a counter-offer (``try_counter``), which the proposer accepts or refuses.
+A player may declare an embargo on another player on its own turn; while either
+side embargoes the other, the two cannot trade.
+
 Rules follow the official CATAN base game rulebook and almanac (2020 edition).
 """
 import random
@@ -44,7 +49,8 @@ DESERT = -1
 KNIGHT, VICTORY_POINT, ROAD_BUILDING, YEAR_OF_PLENTY, MONOPOLY = range(5)
 
 # Phases
-SETUP_SETTLE, SETUP_ROAD, ROLL, MAIN, ROBBER, DISCARD, FREE_ROAD, TRADE_RESPONSE, TRADE_PICK = range(9)
+(SETUP_SETTLE, SETUP_ROAD, ROLL, MAIN, ROBBER, DISCARD, FREE_ROAD, TRADE_RESPONSE, TRADE_PICK,
+ TRADE_COUNTER) = range(10)
 
 # Action kinds
 (
@@ -65,7 +71,10 @@ SETUP_SETTLE, SETUP_ROAD, ROLL, MAIN, ROBBER, DISCARD, FREE_ROAD, TRADE_RESPONSE
     A_ACCEPT,
     A_REJECT,
     A_CONFIRM,
-) = range(17)
+    A_COUNTER,
+    A_EMBARGO,
+    A_LIFT,
+) = range(20)
 
 GENERIC_PORT = 5
 WIN_POINTS = 10
@@ -96,8 +105,13 @@ def offer_action(give, get):
     ) | (A_OFFER << 8)
 
 
+def counter_action(give, get):
+    """A counter-offer: the proposer would give ``give`` and receive ``get``."""
+    return offer_action(give, get) ^ (A_OFFER << 8) | (A_COUNTER << 8)
+
+
 def decode_offer(act):
-    """The (give, get) card counts of an offer action."""
+    """The (give, get) card counts of an offer or counter-offer action."""
     payload = act >> 16
     return (
         [(payload >> (5 * r)) & 31 for r in range(5)],
@@ -125,7 +139,7 @@ _SIMPLE_OFFERS = [
 class Game:
     __slots__ = (
         "n", "rng", "max_turns", "dev_before_roll", "player_trading", "max_offers",
-        "offers_left", "offers_made", "offer", "player_trades", "responders", "responder_index", "responder", "acceptors",
+        "offers_left", "offers_made", "offer", "player_trades", "embargo", "countered", "countered_offer", "responders", "responder_index", "responder", "acceptors",
         "hex_res", "hex_num", "hexes_by_roll", "robber", "node_pips", "port_of_node",
         "node_owner", "node_level", "edge_owner",
         "res", "bank", "rates",
@@ -155,6 +169,9 @@ class Game:
         self.offers_made = set()  # offers turned down since the last trade
         self.offer = None  # (give counts, get counts)
         self.player_trades = 0
+        self.embargo = [0] * n  # embargo[p] has bit q set while p refuses to trade with q
+        self.countered = 0  # counter-offers the proposer accepted
+        self.countered_offer = None  # the original offer while a counter is considered
         self.responders = []
         self.responder_index = 0
         self.responder = -1
@@ -249,6 +266,33 @@ class Game:
             return self.responder
         return self.current
 
+    def embargoed(self, a, b):
+        """Whether a and b cannot trade because either has embargoed the other."""
+        embargo = self.embargo
+        return bool((embargo[a] >> b) & 1 or (embargo[b] >> a) & 1)
+
+    def try_counter(self, give, get):
+        """The counter-offer action if the responder may make it now, else 0.
+
+        ``give`` is what the proposer would hand over and ``get`` what the
+        proposer would receive. The terms must differ from the offer on the
+        table, both sides must give something, and both must hold the cards.
+        """
+        if self.phase != TRADE_RESPONSE:
+            return 0
+        proposer = self.res[self.current]
+        responder = self.res[self.responder]
+        giving = getting = 0
+        for r in range(5):
+            g, t = give[r], get[r]
+            if g > proposer[r] or t > responder[r] or (g and t):
+                return 0
+            giving += g
+            getting += t
+        if not giving or not getting or [list(give), list(get)] == [list(x) for x in self.offer]:
+            return 0
+        return counter_action(give, get)
+
     def victory_points(self, p):
         return (
             (5 - self.settlements_left[p])
@@ -257,6 +301,10 @@ class Game:
             + (2 if self.longest_road == p else 0)
             + (2 if self.largest_army == p else 0)
         )
+
+    def public_points(self, p):
+        """Points everyone can see: victory points without hidden victory point cards."""
+        return self.victory_points(p) - self.vp_cards[p]
 
     def _free_spot(self, node):
         owner = self.node_owner
@@ -309,8 +357,10 @@ class Game:
         if act in self.offers_made:
             return 0
         res = self.res
+        embargo = self.embargo
+        mine = embargo[p]
         for q in range(self.n):
-            if q != p:
+            if q != p and not (mine >> q) & 1 and not (embargo[q] >> p) & 1:
                 other = res[q]
                 if (other[0] >= get[0] and other[1] >= get[1] and other[2] >= get[2]
                         and other[3] >= get[3] and other[4] >= get[4]):
@@ -340,7 +390,8 @@ class Game:
         if phase == DISCARD:
             hand = self.res[self.discarder]
             return [(A_DISCARD << 8) | r for r in range(5) if hand[r]]
-        if phase == TRADE_RESPONSE:
+        if phase == TRADE_RESPONSE or phase == TRADE_COUNTER:
+            # A responder can also counter; build that with try_counter.
             return [A_ACCEPT << 8, A_REJECT << 8]
         if phase == TRADE_PICK:
             acts = [(A_CONFIRM << 8) | q for q in self.acceptors]
@@ -386,7 +437,8 @@ class Game:
         if offers and self.offers_left and self.player_trading:
             res = self.res
             made = self.offers_made
-            wanted = [any(res[q][j] for q in range(self.n) if q != p) for j in range(5)]
+            partners = [q for q in range(self.n) if q != p and not self.embargoed(p, q)]
+            wanted = [any(res[q][j] for q in partners) for j in range(5)]
             for i in range(5):
                 have = hand[i]
                 if have:
@@ -398,6 +450,12 @@ class Game:
                                 acts.append(one)
                             if have >= 2 and two not in made:
                                 acts.append(two)
+
+        if offers and self.player_trading:
+            mine = self.embargo[p]
+            for q in range(self.n):
+                if q != p:
+                    acts.append(((A_LIFT if (mine >> q) & 1 else A_EMBARGO) << 8) | q)
 
         acts.append(A_END << 8)
         return acts
@@ -477,13 +535,33 @@ class Game:
         elif kind == A_OFFER:
             self._offer(p, act)
         elif kind == A_ACCEPT:
-            self.acceptors.append(self.responder)
-            self._next_responder(p)
+            if self.phase == TRADE_COUNTER:
+                # The proposer takes the counter-offer; the original offer ends.
+                self._swap(p, self.responder)
+                self.countered += 1
+                self.responder = -1
+                self.phase = MAIN
+            else:
+                self.acceptors.append(self.responder)
+                self._next_responder(p)
         elif kind == A_REJECT:
             if self.phase == TRADE_RESPONSE:
                 self._next_responder(p)
+            elif self.phase == TRADE_COUNTER:
+                # Counter refused: the original offer goes on to the next player.
+                self.offer = self.countered_offer
+                self.phase = TRADE_RESPONSE
+                self._next_responder(p)
             else:  # the proposer backs out of TRADE_PICK
                 self.phase = MAIN
+        elif kind == A_COUNTER:
+            self.countered_offer = self.offer
+            self.offer = decode_offer(act)
+            self.phase = TRADE_COUNTER
+        elif kind == A_EMBARGO:
+            self.embargo[p] |= 1 << arg
+        elif kind == A_LIFT:
+            self.embargo[p] &= ~(1 << arg)
         elif kind == A_CONFIRM:
             self._swap(p, arg)
             self.phase = MAIN
@@ -552,8 +630,12 @@ class Game:
         # Only players holding everything asked for are asked, in seat order.
         g0, g1, g2, g3, g4 = get
         responders = []
+        embargo = self.embargo
+        mine = embargo[p]
         for k in range(1, n):
             q = (p + k) % n
+            if (mine >> q) & 1 or (embargo[q] >> p) & 1:
+                continue
             other = res[q]
             if other[0] >= g0 and other[1] >= g1 and other[2] >= g2 and other[3] >= g3 and other[4] >= g4:
                 responders.append(q)

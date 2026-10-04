@@ -47,13 +47,13 @@ Add `--plot ../docs` to save two charts:
 
 Rules follow the official CATAN base game rulebook (2020 edition), including playing one development card at any time in your turn, before or after the roll, and keeping 6s and 8s apart. Pass `--no-dev-before-roll` for the house rule that cards wait until after the roll.
 
-**Trading between players:** on your turn you can offer any bundle of cards for any other bundle, as many times as you like. Players holding everything you asked for answer in seat order, and if several accept you pick one. An offer that was just turned down cannot be repeated until a trade goes through or the turn ends. Gifts and swaps of the same resource are not allowed.
+**Trading between players:** on your turn you can offer any bundle of cards for any other bundle, as many times as you like. Players holding everything you asked for answer in seat order, and if several accept you pick one. An offer that was just turned down cannot be repeated until a trade goes through or the turn ends. Gifts and swaps of the same resource are not allowed. A responder can counter with different terms, which the proposer accepts or refuses. A player can embargo another on its own turn; while either side embargoes the other they cannot trade.
 
 **Not covered yet:** the official harbour positions (harbours are spaced evenly with shuffled types).
 
 **Players:**
 
-- `random` (default) is pure chance. On its turn, proposing a trade is one more option alongside its other legal moves; a proposal is a random bundle of its own cards for a random bundle of one opponent's cards, of any size. It accepts or refuses offers on a coin flip.
+- `random` (default) is pure chance. On its turn, proposing a trade and changing an embargo are two more options alongside its other legal moves; a proposal is a random bundle of its own cards for a random bundle of one opponent's cards, of any size. Offered a trade, it accepts, refuses or counters with random terms.
 - `greedy` is a simple strategy, kept for comparison: it builds the most valuable thing it can afford and trades toward its next purchase. Games are about a third as long. Later seats win more often with it, and about one game in a thousand stalls at the turn limit.
 
 Options: `--bot greedy`, `--max-offers N` to cap trade offers per turn, `--no-player-trading` for bank and port trades only.
@@ -103,6 +103,24 @@ uv run python -m src.engine.opening_search --generations 8 --population 24 --gam
 The search put the most weight on covering resources the player does not have yet and on variety, valued ore and grain above brick and lumber and wool lowest, used scarcity moderately, and gave harbours little weight.
 
 A second round with wider ranges and `adaptive` itself among the opponents found nothing clearly better: its best finalist scored 29.5% against the champion's 29.0% on the same 60,000 games, which is within the noise. These features have levelled off.
+
+**Behaviors:** a `BehaviorBot` is random play with single behaviors switched on, so each can be measured on its own. Every seat uses the `adaptive` opening. There are three categories: spending, trading and the robber. Rankings use public points only.
+
+```bash
+uv run python -m src.engine.experiments --games 8000 --tournament-games 40000 --workers 16 --plot ../docs
+```
+
+![One behavior at a time against random play](docs/behaviors.png)
+
+| Category | Best behavior | Win rate from one seat | Head to head |
+|---|---|---|---|
+| Spending | `points_first`: city, then settlement, then development card | 71.9% | 38.2% |
+| Trading | `counter_ahead`: take winning trades, counter the rest to come out a card ahead | 55.8% | 36.0% |
+| Robber | `rank_weighted`: block production in proportion to each owner's points | 30.4% | 27.0% |
+
+An even share is 25%. The first figure is one seat using the behavior against three random seats (8,000 games, accurate to about 1 point). The second is a tournament with a different behavior from the category in every seat (40,000 games).
+
+Trading supports two table conventions beyond plain offers: a responder can answer with a counter-offer, and a player can declare or lift an embargo that stops all trade with another player.
 
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 
