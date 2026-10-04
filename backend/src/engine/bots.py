@@ -419,10 +419,10 @@ DEFAULT_OPENING_PARAMS = {
 }
 
 OPENING_PARAM_RANGES = {
-    "weights": (0.2, 2.5),
-    "scarcity": (0.0, 2.5),
-    "variety": (0.0, 5.0),
-    "new_resource": (0.0, 5.0),
+    "weights": (0.2, 4.0),
+    "scarcity": (0.0, 3.0),
+    "variety": (0.0, 10.0),
+    "new_resource": (0.0, 15.0),
     "number_variety": (0.0, 3.0),
     "harbor": (0.0, 4.0),
     "harbor_match": (0.0, 1.0),

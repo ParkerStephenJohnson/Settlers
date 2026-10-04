@@ -94,13 +94,15 @@ An even share is 25%. Head-to-head figures come from 120,000 games (about 80,000
 - 2:1 harbours, by how much of that resource the player would produce
 - how many different resources and dice numbers a spot touches
 
-Its eleven settings were found by an evolution search: each candidate plays one seat against `balanced`, `pips` and `ore_grain`, the best survive and are mutated, and the finalists are re-tested on fresh games.
+Its eleven settings were found by an evolution search: each candidate plays one seat against three of the strongest openings, the best survive and are mutated, and the finalists are re-tested on fresh games.
 
 ```bash
 uv run python -m src.engine.opening_search --generations 8 --population 24 --games 2500 --workers 16
 ```
 
 The search put the most weight on covering resources the player does not have yet and on variety, valued ore and grain above brick and lumber and wool lowest, used scarcity moderately, and gave harbours little weight.
+
+A second round with wider ranges and `adaptive` itself among the opponents found nothing clearly better: its best finalist scored 29.5% against the champion's 29.0% on the same 60,000 games, which is within the noise. These features have levelled off.
 
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 

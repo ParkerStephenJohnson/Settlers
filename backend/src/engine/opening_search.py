@@ -14,10 +14,16 @@ import random
 import time
 from multiprocessing import Pool
 
-from .bots import DEFAULT_OPENING_PARAMS, OPENING_PARAM_RANGES, PhasedBot, board_aware_opening
+from .bots import (
+    ADAPTIVE_OPENING_PARAMS,
+    DEFAULT_OPENING_PARAMS,
+    OPENING_PARAM_RANGES,
+    PhasedBot,
+    board_aware_opening,
+)
 from .simulate import run_game
 
-DEFAULT_FIELD = ("balanced", "pips", "ore_grain")
+DEFAULT_FIELD = ("adaptive", "balanced", "pips")
 
 
 def _evaluate_batch(args):
@@ -91,7 +97,8 @@ def search(generations=6, population=24, games=2000, survivors=6, field=DEFAULT_
     pips_only = dict(DEFAULT_OPENING_PARAMS)
     balanced = dict(DEFAULT_OPENING_PARAMS, variety=2.0)
     scarce = dict(DEFAULT_OPENING_PARAMS, variety=2.0, scarcity=1.0, new_resource=1.0)
-    candidates = list(seeds_from or [pips_only, balanced, scarce])
+    champion = {k: (v[:] if isinstance(v, list) else v) for k, v in ADAPTIVE_OPENING_PARAMS.items()}
+    candidates = list(seeds_from or [champion, pips_only, balanced, scarce])
     while len(candidates) < population:
         candidates.append(random_params(rng))
 
