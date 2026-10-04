@@ -154,3 +154,60 @@ def test_ab_test_is_repeatable_and_the_standard_sits_near_an_even_share():
     assert finished == 40 and 0 <= wins <= 40
     assert rounds.winners({"discard": {"keep_goal": (10, 40, 0), "most": (30, 40, 0)}}, STANDARD, 4) == {"discard": "most"}
     assert rounds.winners({"discard": {"keep_goal": (10, 40, 0), "most": (11, 40, 0)}}, STANDARD, 4) == {}
+
+
+def test_nearest_goes_for_whichever_purchase_needs_fewer_cards():
+    from src.engine.strategy import SPEND
+
+    game = in_main([cards(ore=3, grain=1), EMPTY, EMPTY, EMPTY])
+    assert SPEND["nearest"](game, 0)[0] == "city"  # one card short of a city
+    game.res[0] = cards(brick=1, lumber=1, grain=1)
+    if game.settlement_spots(0):
+        assert SPEND["nearest"](game, 0)[0] == "settlement"  # one card short of a settlement
+
+
+def test_contrarian_does_the_opposite_of_the_table():
+    from src.engine.strategy import SPEND
+
+    game = in_main([EMPTY, EMPTY, EMPTY, EMPTY])
+    assert SPEND["contrarian"](game, 0)[0] == "settlement"  # nobody has built anything yet
+    game.settlements[1].append(53)  # an opponent has expanded
+    assert SPEND["contrarian"](game, 0)[0] == "city"
+
+
+def test_goal_trading_refuses_leaders_only_in_the_variants_that_say_so():
+    from src.engine.game import A_ACCEPT, A_REJECT, offer_action
+
+    def answer(policy, lead):
+        game = in_main([cards(brick=2), cards(ore=2, grain=2, wool=2), EMPTY, EMPTY])
+        if lead:
+            game.longest_road = 0
+        # Player 0 offers brick for wool; player 1 is saving for a city and can spare wool.
+        game.res[1] = cards(ore=2, grain=2, wool=2, lumber=0)
+        game.apply(offer_action(cards(brick=2), cards(wool=1)))
+        return kind_of(StrategyBot(trade=policy).choose(game, game.legal_actions(False)))
+
+    assert answer("goal", lead=False) == A_ACCEPT  # more cards for a spare one
+    assert answer("goal", lead=True) == A_ACCEPT
+    assert answer("goal_no_leader", lead=False) == A_ACCEPT
+    assert answer("goal_no_leader", lead=True) == A_REJECT
+    assert answer("goal_behind_only", lead=False) == A_REJECT  # level is not behind
+
+
+def test_goal_counter_asks_for_a_card_it_needs():
+    from src.engine.game import A_COUNTER, offer_action
+
+    # Player 1 needs ore for a city. Player 0 offers brick for wool but also holds ore.
+    game = in_main([cards(brick=2, ore=1), cards(ore=2, grain=2, wool=2), EMPTY, EMPTY])
+    game.apply(offer_action(cards(brick=1), cards(wool=2)))
+    choice = StrategyBot(trade="goal_counter").choose(game, game.legal_actions(False))
+    assert kind_of(choice) == A_COUNTER
+    assert decode_offer(choice) == (cards(ore=1), cards(wool=2))
+
+
+def test_mixed_field_tournament_counts_one_winner_per_game():
+    totals = rounds.tournament("spend", games=40, seed=6)
+    assert sum(wins for wins, _ in totals.values()) == 40
+    assert sum(played for _, played in totals.values()) == 160
+    with pytest.raises(ValueError):
+        rounds.tournament("build", games=1)

@@ -130,17 +130,19 @@ uv run python -m src.engine.rounds --games 10000 --rounds 3 --workers 16 --plot 
 
 | Behavior | Standard | What the rounds showed |
 |---|---|---|
-| Opening | `adaptive` | Not varied in these rounds |
-| Spending | `points_first` | No stable winner: whichever of city-first and settlement-first the other seats are not using wins about 27 to 31% |
+| Opening | `adaptive` | Best of six, alone (25.0% against 24.4% for the next) and in a mixed field (34.7%) |
+| Spending | `nearest` | Go for whichever of a city and a settlement needs fewer cards. Level with settlement-first; nothing beats either |
 | Build location | `value` | About the same as plain pips |
 | Development cards | `eager` | Holding knights back costs about a point; never playing cards costs 15 |
-| Proposing trades | `escalate` | Offer one for one, then two for one. What works depends on how opponents answer |
+| Proposing trades | `escalate` | Offer one for one, then two for one |
 | Bank trades | `goal` | Never trading with the bank costs 7 to 14 points |
-| Answering trades | `goal` | Accept what brings the next purchase closer. Judging trades by card count alone loses badly |
+| Answering trades | `goal` | Accept what brings the next purchase closer. Judging trades by card count loses 8 points |
 | Robber | `rank_weighted` | Block production in proportion to each owner's points |
 | Discards | `keep_goal` | About the same as discarding the biggest pile |
 
-![Round 3](docs/rounds_3.png)
+![Round 4](docs/round4_1.png)
+
+Refusing to trade with the leader, trading only with players behind, and embargoes were each tested on top of the goal rule. None helped: they scored between 22.6% and 25.0% against an even 25%.
 
 Four standard bots finish a game in about 70 turns.
 

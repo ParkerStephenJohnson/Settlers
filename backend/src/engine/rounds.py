@@ -9,6 +9,7 @@ rate above an even share means the change beats the standard choice.
 import argparse
 import math
 import os
+import random
 import time
 from multiprocessing import Pool
 
@@ -54,6 +55,46 @@ def ab_test(categories, games, base=None, num_players=4, workers=1, seed=0):
         t[1] += finished
         t[2] += turns
     return {c: {n: tuple(v) for n, v in rows.items()} for c, rows in totals.items()}
+
+
+def _tournament_batch(args):
+    category, names, base, seeds, num_players = args
+    plays = {n: 0 for n in names}
+    wins = {n: 0 for n in names}
+    for seed in seeds:
+        lineup = random.Random(seed * 7919 + 1).sample(names, num_players)
+        game = run_game([StrategyBot(**dict(base, **{category: n})) for n in lineup], seed)
+        if game.winner < 0:
+            continue
+        for n in lineup:
+            plays[n] += 1
+        wins[lineup[game.winner]] += 1
+    return plays, wins
+
+
+def tournament(category, games, base=None, num_players=4, workers=1, seed=0):
+    """A mixed field: every seat uses a different variant of one category.
+
+    Returns {variant: (wins, games played)}. Needs at least as many variants as seats.
+    """
+    base = dict(base or STANDARD)
+    names = list(CATEGORIES[category])
+    if len(names) < num_players:
+        raise ValueError(f"{category} has only {len(names)} variants")
+    seeds = range(seed, seed + games)
+    size = max(1, games // (max(workers, 1) * 2))
+    jobs = [(category, names, base, seeds[i:i + size], num_players) for i in range(0, games, size)]
+    totals = {n: [0, 0] for n in names}
+    if workers > 1:
+        with Pool(workers) as pool:
+            results = pool.map(_tournament_batch, jobs)
+    else:
+        results = map(_tournament_batch, jobs)
+    for plays, wins in results:
+        for n in names:
+            totals[n][0] += wins[n]
+            totals[n][1] += plays[n]
+    return {n: tuple(v) for n, v in totals.items()}
 
 
 def rate(wins, n):
@@ -132,6 +173,10 @@ def main():
     parser.add_argument("--workers", type=int, default=1, help=f"processes to use (this machine has {os.cpu_count()})")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--plot", metavar="DIR", help="save rounds_N.png here (needs matplotlib)")
+    parser.add_argument("--tournament", nargs="*", default=[], metavar="CATEGORY",
+                        help="also play a mixed field for these categories: a different variant in every seat")
+    parser.add_argument("--tournament-games", type=int, default=None, help="default: 4 x --games")
+    parser.add_argument("--label", default="rounds", help="file name prefix for charts")
     args = parser.parse_args()
 
     base = dict(STANDARD)
@@ -145,7 +190,7 @@ def main():
         report(results, base, args.players)
         if args.plot:
             os.makedirs(args.plot, exist_ok=True)
-            path = os.path.join(args.plot, f"rounds_{number}.png")
+            path = os.path.join(args.plot, f"{args.label}_{number}.png")
             plot(results, base, args.players, args.games, path,
                  f"Round {number}: one behavior changed in one seat, against three standard bots")
             print(f"\nchart   {path}")
@@ -156,6 +201,15 @@ def main():
         else:
             print("\nno variant clearly beat the standard")
             break
+    for category in args.tournament:
+        games = args.tournament_games or 4 * args.games
+        mixed = tournament(category, games, base, args.players, args.workers, args.seed + 500_000_000)
+        print(f"\nMIXED FIELD, {category.upper()}: {games} games, a different variant in every seat")
+        print(f"  {'variant':<20}{'games':>8}{'win rate':>10}{'+/-':>7}")
+        for name in sorted(mixed, key=lambda n: -mixed[n][0] / max(1, mixed[n][1])):
+            r, margin = rate(*mixed[name])
+            print(f"  {name:<20}{mixed[name][1]:>8}{r:>10.1%}{margin:>7.1%}")
+
     print("\nstandard after the last round:")
     for key, value in base.items():
         print(f"  {key:<9}{value}")

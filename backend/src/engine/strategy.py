@@ -16,7 +16,17 @@ STANDARD is the reference bot. An experiment changes one behavior in one seat
 and plays it against STANDARD in the other seats. Randomness is used only to
 break exact ties.
 """
-from .behaviors import ROBBING, TRADING, TradePolicy, _fair_counter, _gain, _trimmed_ask, _weakest
+from .behaviors import (
+    ROBBING,
+    TRADING,
+    TradePolicy,
+    _embargo_close,
+    _embargo_leader,
+    _fair_counter,
+    _gain,
+    _proposer_leads,
+    _weakest,
+)
 from .bots import ADAPTIVE_OPENING_PARAMS, OPENINGS, spot_value
 from .game import (
     A_BUY,
@@ -102,11 +112,39 @@ def _spare(hand, cost):
 
 # ------------------------------------------------------------------ spend
 
+_CITY_FIRST = ("city", "settlement", "dev")
+_SETTLE_FIRST = ("settlement", "city", "dev")
+
+
+def _order_nearest(game, p):
+    """Go for whichever of a city and a settlement needs fewer cards right now."""
+    hand = game.res[p]
+    city = sum(_missing(hand, COSTS["city"])) if game.cities_left[p] and game.settlements[p] else 99
+    settle = 99
+    if game.settlements_left[p] and game.settlement_spots(p):
+        settle = sum(_missing(hand, COSTS["settlement"]))
+    return _SETTLE_FIRST if settle < city else _CITY_FIRST
+
+
+def _order_contrarian(game, p):
+    """Do the opposite of the table: settle when opponents are upgrading, upgrade when they settle."""
+    cities = settlements = 0
+    for q in range(game.n):
+        if q != p:
+            cities += len(game.cities[q])
+            settlements += len(game.settlements[q]) + len(game.cities[q]) - 2
+    return _SETTLE_FIRST if cities >= settlements else _CITY_FIRST
+
+
+# A spending order is a tuple, or a function (game, player) -> tuple that can
+# change its mind during the game.
 SPEND = {
-    "points_first": ("city", "settlement", "dev"),
-    "settle_first": ("settlement", "city", "dev"),
+    "points_first": _CITY_FIRST,
+    "settle_first": _SETTLE_FIRST,
     "dev_first": ("dev", "city", "settlement"),
     "city_settle_only": ("city", "settlement"),
+    "nearest": _order_nearest,
+    "contrarian": _order_contrarian,
 }
 
 
@@ -332,15 +370,87 @@ def _closer_proposer(game, order):
 
 
 _ORDER = SPEND["points_first"]
-# Left out: "random", and "no_leader", which answers on a coin flip.
-TRADE = {name: policy for name, policy in TRADING.items() if name not in ("random", "no_leader")}
-TRADE["goal"] = TradePolicy(lambda game, me: _closer(game, me, _ORDER),
-                            on_counter=lambda game: _closer_proposer(game, _ORDER), pick=_weakest)
-TRADE["goal_counter"] = TradePolicy(lambda game, me: _closer(game, me, _ORDER), counter=_trimmed_ask(0),
-                                    on_counter=lambda game: _closer_proposer(game, _ORDER), pick=_weakest)
+
+
+def _goal(game, me):
+    return _closer(game, me, _ORDER)
+
+
+def _goal_proposer(game):
+    return _closer_proposer(game, _ORDER)
+
+
+def _goal_counter(game, me):
+    """Turn an offer that does not help into one that does.
+
+    Give the proposer what it asked for, provided that can be spared, and ask
+    in return for one card this player is actually missing.
+    """
+    cost = COSTS.get(next_purchase(game, me, _ORDER) or "")
+    if cost is None:
+        return None
+    _, get = game.offer
+    hand = game.res[me]
+    if any(get[r] and hand[r] - get[r] < cost[r] for r in range(5)):
+        return None
+    missing = _missing(hand, cost)
+    theirs = game.res[game.current]
+    for r in sorted(range(5), key=lambda r: -missing[r]):
+        if missing[r] and theirs[r] and not get[r]:
+            give = [0] * 5
+            give[r] = 1
+            return give, get
+    return None
+
+
+def _leads(game):
+    return _proposer_leads(game)
+
+
+def _close(game):
+    return game.public_points(game.current) >= 7
+
+
+def _goal_policy(refuse=None, counter=None, embargo=None):
+    if refuse is None:
+        respond = _goal
+    else:
+        def respond(game, me):
+            return not refuse(game, me) and _goal(game, me)
+    return TradePolicy(respond, counter=counter, on_counter=_goal_proposer, pick=_weakest, embargo=embargo)
+
+
+# Every policy below except the three references judges a trade by whether it
+# brings its own next purchase closer. They differ in whom they will deal with.
+TRADE = {
+    # References: refuse everything; card-counting rules from the first experiments.
+    "never": TRADING["never"],
+    "profit": TRADING["profit"],
+    "counter_ahead": TRADING["counter_ahead"],
+    # Accept what brings the next purchase closer.
+    "goal": _goal_policy(),
+    # As goal, and counter an unhelpful offer by asking for a card it needs.
+    "goal_counter": _goal_policy(counter=_goal_counter),
+    # As goal, but refuse the player alone in first place.
+    "goal_no_leader": _goal_policy(refuse=lambda game, me: _leads(game)),
+    # As goal, but refuse anyone within three points of winning.
+    "goal_no_close": _goal_policy(refuse=lambda game, me: _close(game)),
+    # As goal, but only with players who have fewer points than it does.
+    "goal_behind_only": _goal_policy(
+        refuse=lambda game, me: game.public_points(game.current) >= game.public_points(me)),
+    # As goal, and hold an embargo on the player alone in first place.
+    "goal_embargo_leader": _goal_policy(embargo=_embargo_leader),
+    # As goal, and embargo anyone within three points of winning.
+    "goal_embargo_close": _goal_policy(embargo=_embargo_close),
+    # Counter, and embargo anyone within three points of winning.
+    "goal_counter_embargo": _goal_policy(counter=_goal_counter, embargo=_embargo_close),
+}
 ROBBER_POLICIES = {name: policy for name, policy in ROBBING.items() if policy is not None}
 
+OPENING = {name: policy for name, policy in OPENINGS.items() if name != "random"}
+
 CATEGORIES = {
+    "opening": OPENING,
     "spend": SPEND,
     "build": BUILD,
     "dev": DEV,
@@ -351,14 +461,14 @@ CATEGORIES = {
     "discard": DISCARDS,
 }
 
-# The reference bot, after three rounds of src.engine.rounds (10,000 games per
-# variant). Proposing and answering trades changed during those rounds; the
-# rest held. Spending has no stable winner: against three points_first bots
-# settle_first wins more, and against three settle_first bots points_first
-# does, so the less common order has the edge. points_first is kept here.
+# The reference bot, after four rounds of src.engine.rounds (10,000 games per
+# variant). No single change to it wins more than an even share:
+#   - spend: nearest and settle_first are level and nothing beats either
+#   - trade: goal; refusing or embargoing leaders does not help
+#   - opening: adaptive, also the winner of a mixed field of openings
 STANDARD = {
     "opening": "adaptive",
-    "spend": "points_first",
+    "spend": "nearest",
     "build": "value",
     "dev": "eager",
     "propose": "escalate",
@@ -377,8 +487,9 @@ class StrategyBot:
     def __init__(self, **choices):
         config = dict(STANDARD, **choices)
         self.config = config
-        self.opening = OPENINGS[config["opening"]]
-        self.order = SPEND[config["spend"]]
+        opening = config["opening"]
+        self.opening = OPENINGS[opening] if isinstance(opening, str) else opening
+        self._spend = SPEND[config["spend"]]
         self.build = BUILD[config["build"]]
         self.knight = DEV[config["dev"]]
         self.plays_cards = config["dev"] != "never"
@@ -387,6 +498,10 @@ class StrategyBot:
         self.trade = TRADE[config["trade"]]
         self.robber = ROBBER_POLICIES[config["robber"]]
         self.discard = DISCARDS[config["discard"]]
+
+    def order(self, game, p):
+        spend = self._spend
+        return spend(game, p) if callable(spend) else spend
 
     # ---------------------------------------------------------------- dispatch
 
@@ -414,7 +529,7 @@ class StrategyBot:
             return self.robber(game, actions)
         if phase == DISCARD:
             p = game.discarder
-            return self.discard(game, p, actions, COSTS.get(next_purchase(game, p, self.order) or ""))
+            return self.discard(game, p, actions, COSTS.get(next_purchase(game, p, self.order(game, p)) or ""))
         if phase == FREE_ROAD:
             return self.build(game, game.current, A_ROAD, actions)
         return actions[0]
@@ -463,7 +578,8 @@ class StrategyBot:
             by_kind.setdefault(_kind(a), []).append(a)
 
         # 2. Buy the first thing in the spending order that is affordable.
-        for item in self.order:
+        order = self.order(game, p)
+        for item in order:
             options = by_kind.get(_KIND[item])
             if options:
                 return options[0] if item == "dev" else self.build(game, p, _KIND[item], options)
@@ -471,7 +587,7 @@ class StrategyBot:
         if needs_road and A_ROAD in by_kind:
             return self.build(game, p, A_ROAD, by_kind[A_ROAD])
 
-        target = next_purchase(game, p, self.order)
+        target = next_purchase(game, p, order)
         hand = game.res[p]
         cost = COSTS.get(target or "")
         missing = _missing(hand, cost) if cost else [0] * 5
