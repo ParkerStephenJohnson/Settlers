@@ -61,11 +61,14 @@ class GreedyBot:
         return game.node_pips[node] + 0.5 * len(resources)
 
     def _roll(self, game, actions):
-        # Play a knight first only to move the robber off our own hex.
+        # Play a knight before rolling only to move the robber off our own hex.
         p = game.current
         for node in HEX_NODES[game.robber]:
             if game.node_owner[node] == p:
-                return actions[1]
+                for a in actions:
+                    if a >> 8 == A_KNIGHT:
+                        return a
+                break
         return actions[0]
 
     def _robber(self, game, actions):

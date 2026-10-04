@@ -2,17 +2,27 @@ import pytest
 
 from src.engine import Game, GreedyBot, RandomBot
 from src.engine.game import (
+    A_KNIGHT,
+    A_MONOPOLY,
     A_ROAD,
+    A_ROAD_BUILDING,
+    A_ROLL,
     A_SETTLE,
+    FREE_ROAD,
+    KNIGHT,
     MAIN,
+    MONOPOLY,
+    ROAD_BUILDING,
+    ROLL,
     SETUP_ROAD,
     SETUP_SETTLE,
     WIN_POINTS,
     action,
 )
-from src.engine.simulate import play_game, simulate
+from src.engine.simulate import play_game, play_game_stats, simulate, summarize
 from src.engine.topology import (
     COASTAL_EDGES,
+    HEX_NEIGHBORS,
     EDGE_NODES,
     HEX_NODES,
     NODE_EDGES,
@@ -199,3 +209,78 @@ def test_illegal_looking_actions_are_never_offered():
                     assert game.node_owner[arg] < 0
         game.apply(bot.choose(game, actions))
     assert action(A_ROAD, 3) >> 8 == A_ROAD
+
+
+def _after_setup(seed=0, **kwargs):
+    game = Game(4, seed=seed, **kwargs)
+    bot = GreedyBot()
+    while game.phase in (SETUP_SETTLE, SETUP_ROAD):
+        game.apply(bot.choose(game, game.legal_actions()))
+    assert game.phase == ROLL
+    return game
+
+
+@pytest.mark.parametrize("seed", range(50))
+def test_red_numbers_are_never_adjacent(seed):
+    # Rulebook, variable set-up: "the tokens with the red numbers must not be next to each other."
+    game = Game(4, seed=seed)
+    for h, number in enumerate(game.hex_num):
+        if number in (6, 8):
+            assert all(game.hex_num[other] not in (6, 8) for other in HEX_NEIGHBORS[h])
+    assert sorted(n for n in game.hex_num if n) == [2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9, 9, 10, 10, 11, 11, 12]
+
+
+def test_any_development_card_can_be_played_before_the_roll():
+    # Rulebook: "You can play the card at any time, even before you roll the dice."
+    game = _after_setup()
+    p = game.current
+    game.dev_hand[p][KNIGHT] = 1
+    game.dev_hand[p][MONOPOLY] = 1
+    game.dev_hand[p][ROAD_BUILDING] = 1
+    kinds = {a >> 8 for a in game.legal_actions()}
+    assert {A_ROLL, A_KNIGHT, A_MONOPOLY, A_ROAD_BUILDING} <= kinds
+
+
+def test_only_one_development_card_per_turn():
+    game = _after_setup()
+    p = game.current
+    game.dev_hand[p][MONOPOLY] = 2
+    game.apply(action(A_MONOPOLY, 0))
+    assert game.phase == ROLL
+    assert {a >> 8 for a in game.legal_actions()} == {A_ROLL}
+
+
+def test_road_building_before_the_roll_returns_to_the_roll():
+    game = _after_setup()
+    p = game.current
+    game.dev_hand[p][ROAD_BUILDING] = 1
+    game.apply(action(A_ROAD_BUILDING))
+    assert game.phase == FREE_ROAD
+    game.apply(game.legal_actions()[0])
+    game.apply(game.legal_actions()[0])
+    assert game.phase == ROLL
+    assert len(game.edges[p]) == 4
+
+
+def test_house_rule_can_forbid_cards_before_the_roll():
+    game = _after_setup(dev_before_roll=False)
+    game.dev_hand[game.current][KNIGHT] = 1
+    assert {a >> 8 for a in game.legal_actions()} == {A_ROLL}
+
+
+def test_a_card_bought_this_turn_cannot_be_played_until_the_next():
+    game = _after_setup()
+    p = game.current
+    game.dev_new[p][KNIGHT] = 1
+    assert A_KNIGHT not in {a >> 8 for a in game.legal_actions()}
+
+
+def test_win_statistics_add_up():
+    results = simulate(200, seed=11)
+    summary = summarize(results, 4)
+    assert summary["finished"] == sum(summary["wins"])
+    assert sum(count for _, count in summary["winning_moves"]) == summary["finished"]
+    for winner, turns, move, points in results:
+        if winner >= 0:
+            assert sum(points) >= WIN_POINTS
+    assert play_game_stats(5) == play_game_stats(5)

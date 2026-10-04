@@ -12,13 +12,15 @@ Rules covered: setup draft, production with bank shortages, the robber and
 discards, roads, settlements, cities, development cards, ports and bank trades,
 longest road, largest army, and winning at 10 points.
 
-Not covered: trading between players. Number tokens are placed at random with
-no restriction on adjacent 6s and 8s.
+Not covered: trading between players.
+
+Rules follow the official CATAN base game rulebook and almanac (2020 edition).
 """
 import random
 
 from .topology import (
     EDGE_NODES,
+    HEX_NEIGHBORS,
     HEX_NODES,
     NODE_EDGES,
     NODE_HEXES,
@@ -73,7 +75,7 @@ def action(kind, arg=0):
 
 class Game:
     __slots__ = (
-        "n", "rng", "max_turns",
+        "n", "rng", "max_turns", "dev_before_roll",
         "hex_res", "hex_num", "hexes_by_roll", "robber", "node_pips", "port_of_node",
         "node_owner", "node_level", "edge_owner",
         "res", "bank", "rates",
@@ -83,30 +85,43 @@ class Game:
         "road_len", "longest_road", "largest_army",
         "current", "phase", "turn", "winner", "done",
         "setup_order", "setup_index", "last_settle",
-        "after_robber", "free_roads", "pending_discard", "discarder",
+        "after_robber", "after_free", "free_roads", "pending_discard", "discarder",
     )
 
-    def __init__(self, num_players=4, seed=None, max_turns=2000):
+    def __init__(self, num_players=4, seed=None, max_turns=2000, dev_before_roll=True):
         self.n = n = num_players
         self.rng = rng = random.Random(seed)
         self.max_turns = max_turns
+        # Official rule: a development card may be played before the roll.
+        # Pass False for the house rule that cards wait until after it.
+        self.dev_before_roll = dev_before_roll
 
         # Board
         self.hex_res = hex_res = _HEX_RESOURCES[:]
         rng.shuffle(hex_res)
+        self.robber = hex_res.index(DESERT)
         numbers = _NUMBERS[:]
-        rng.shuffle(numbers)
-        self.hex_num = hex_num = [0] * NUM_HEXES
+        # Rulebook: in a random set-up the red numbers (6 and 8) must not be
+        # next to each other. Reshuffle until that holds.
+        while True:
+            rng.shuffle(numbers)
+            hex_num = [0] * NUM_HEXES
+            i = 0
+            for h in range(NUM_HEXES):
+                if hex_res[h] != DESERT:
+                    hex_num[h] = numbers[i]
+                    i += 1
+            if not any(
+                hex_num[h] in (6, 8) and hex_num[other] in (6, 8)
+                for h in range(NUM_HEXES)
+                for other in HEX_NEIGHBORS[h]
+            ):
+                break
+        self.hex_num = hex_num
         self.hexes_by_roll = by_roll = [[] for _ in range(13)]
-        self.robber = 0
-        i = 0
         for h in range(NUM_HEXES):
-            if hex_res[h] == DESERT:
-                self.robber = h
-            else:
-                hex_num[h] = numbers[i]
-                by_roll[numbers[i]].append(h)
-                i += 1
+            if hex_num[h]:
+                by_roll[hex_num[h]].append(h)
         self.node_pips = [sum(PIPS.get(hex_num[h], 0) for h in NODE_HEXES[node]) for node in range(NUM_NODES)]
 
         ports = _PORTS[:]
@@ -155,6 +170,7 @@ class Game:
         self.done = False
         self.last_settle = -1
         self.after_robber = MAIN
+        self.after_free = MAIN
         self.free_roads = 0
         self.pending_discard = [0] * n
         self.discarder = -1
@@ -204,9 +220,11 @@ class Game:
         if phase == MAIN:
             return self._main_actions(p)
         if phase == ROLL:
+            # Rulebook: one development card may be played at any time during
+            # your turn, "even before you roll the dice".
             acts = [A_ROLL << 8]
-            if not self.dev_played and self.dev_hand[p][KNIGHT]:
-                acts.append(A_KNIGHT << 8)
+            if self.dev_before_roll and not self.dev_played:
+                self._dev_actions(p, acts)
             return acts
         if phase == ROBBER:
             return self._robber_actions(p)
@@ -225,11 +243,9 @@ class Game:
         hand = self.res[p]
         brick, lumber, ore, grain, wool = hand
         acts = []
-        spots = None
 
         if brick and lumber and self.roads_left[p]:
-            spots = self.road_spots(p)
-            for e in spots:
+            for e in self.road_spots(p):
                 acts.append((A_ROAD << 8) | e)
         if brick and lumber and grain and wool and self.settlements_left[p]:
             for node in self.touch[p]:
@@ -242,24 +258,7 @@ class Game:
             acts.append(A_BUY << 8)
 
         if not self.dev_played:
-            dev = self.dev_hand[p]
-            if dev[KNIGHT]:
-                acts.append(A_KNIGHT << 8)
-            if dev[ROAD_BUILDING] and self.roads_left[p]:
-                if spots is None:
-                    spots = self.road_spots(p)
-                if spots:
-                    acts.append(A_ROAD_BUILDING << 8)
-            bank = self.bank
-            if dev[YEAR_OF_PLENTY]:
-                for i in range(5):
-                    if bank[i]:
-                        for j in range(i, 5):
-                            if bank[j] and (i != j or bank[i] >= 2):
-                                acts.append((A_YEAR_OF_PLENTY << 8) | (i * 5 + j))
-            if dev[MONOPOLY]:
-                for r in range(5):
-                    acts.append((A_MONOPOLY << 8) | r)
+            self._dev_actions(p, acts)
 
         rates = self.rates[p]
         bank = self.bank
@@ -271,6 +270,23 @@ class Game:
 
         acts.append(A_END << 8)
         return acts
+
+    def _dev_actions(self, p, acts):
+        dev = self.dev_hand[p]
+        if dev[KNIGHT]:
+            acts.append(A_KNIGHT << 8)
+        if dev[ROAD_BUILDING] and self.roads_left[p] and self.road_spots(p):
+            acts.append(A_ROAD_BUILDING << 8)
+        if dev[YEAR_OF_PLENTY]:
+            bank = self.bank
+            for i in range(5):
+                if bank[i]:
+                    for j in range(i, 5):
+                        if bank[j] and (i != j or bank[i] >= 2):
+                            acts.append((A_YEAR_OF_PLENTY << 8) | (i * 5 + j))
+        if dev[MONOPOLY]:
+            for r in range(5):
+                acts.append((A_MONOPOLY << 8) | r)
 
     def _robber_actions(self, p):
         node_owner = self.node_owner
@@ -344,6 +360,7 @@ class Game:
             self.dev_hand[p][ROAD_BUILDING] -= 1
             self.dev_played = True
             self.free_roads = min(2, self.roads_left[p])
+            self.after_free = self.phase
             self.phase = FREE_ROAD
         elif kind == A_YEAR_OF_PLENTY:
             self.dev_hand[p][YEAR_OF_PLENTY] -= 1
@@ -498,7 +515,7 @@ class Game:
             self.free_roads -= 1
             if not self.free_roads or not self.roads_left[p] or not self.road_spots(p):
                 self.free_roads = 0
-                self.phase = MAIN
+                self.phase = self.after_free
 
     def _build_settlement(self, p, node):
         setup = self.phase == SETUP_SETTLE

@@ -34,13 +34,19 @@ uv run python -m src.engine.simulate --games 20000 --workers 8
 
 That run was on a 16-core Windows desktop. One core does about 430 games per second.
 
-Add `--plot wins.png` to save a chart of wins by seat. Over 100,000 games on 16 workers (3,718 games per second), later seats won more often with these bots:
+Add `--plot ../docs` to save two charts. Over 100,000 games on 16 workers (3,550 games per second), later seats won more often with these bots:
 
-![Wins by seat over 99,873 finished games](docs/wins_by_seat.png)
+![Wins by seat over 99,924 finished games](docs/wins_by_seat.png)
+
+Cities decided most games, and about a fifth ended on a victory point card:
+
+![How games were won](docs/win_conditions.png)
 
 **Rules covered:** the setup draft, production with bank shortages, the robber and discards on a 7, roads, settlements, cities, all five development cards, ports and bank trades, longest road, largest army, and winning at 10 points.
 
-**Not covered yet:** trading between players, and the rule against placing 6s and 8s next to each other.
+Rules follow the official CATAN base game rulebook (2020 edition), including playing one development card at any time in your turn, before or after the roll, and keeping 6s and 8s apart. Pass `--no-dev-before-roll` for the house rule that cards wait until after the roll.
+
+**Not covered yet:** trading between players.
 
 **Players:**
 
