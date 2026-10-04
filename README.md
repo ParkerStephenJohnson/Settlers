@@ -1,5 +1,7 @@
 # Settlers
 
+[![CI](https://github.com/ParkerStephenJohnson/Settlers/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkerStephenJohnson/Settlers/actions/workflows/ci.yml)
+
 A Catan board simulator: a Python API that generates boards and a React app that draws them.
 
 ![A generated Catan board](docs/board.png)
@@ -66,6 +68,10 @@ Each hex looks like this:
 cd backend
 uv run pytest
 ```
+
+## License
+
+[MIT](LICENSE)
 
 ## Note
 
