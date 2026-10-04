@@ -58,6 +58,35 @@ Rules follow the official CATAN base game rulebook (2020 edition), including pla
 
 Options: `--bot greedy`, `--max-offers N` to cap trade offers per turn, `--no-player-trading` for bank and port trades only.
 
+**Phases:** a `PhasedBot` is built from one policy per phase of the game. Today there are two phases: the opening (the two starting settlements and roads) and everything after it, which is random by default.
+
+```python
+from src.engine import PhasedBot
+from src.engine.simulate import run_game
+
+bots = [PhasedBot("balanced"), PhasedBot("random"), PhasedBot("random"), PhasedBot("random")]
+game = run_game(bots, seed=1)
+```
+
+To compare openings, one seat uses the opening under test, the other three open at random, and everyone plays at random afterwards. The seat rotates and every opening sees the same seeds.
+
+```bash
+uv run python -m src.engine.openings --games 20000 --workers 16 --plot ../docs
+```
+
+![Win rate by opening](docs/openings.png)
+
+| Opening | What it picks | Win rate |
+|---|---|---|
+| `balanced` | Most dice pips, plus a bonus for each different resource | 68.0% |
+| `pips` | Most dice pips | 65.2% |
+| `ore_grain` | Pips weighted toward ore and grain | 60.4% |
+| `port` | Pips plus a bonus for a harbour | 56.7% |
+| `brick_lumber` | Pips weighted toward brick and lumber | 54.6% |
+| `random` | Any legal spot | 24.7% |
+
+Each is 20,000 games, accurate to about 0.7 points. These measure an opening against opponents who open at random, not against each other.
+
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 
 Using it from Python:

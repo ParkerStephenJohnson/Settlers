@@ -64,6 +64,17 @@ def _run(seed, num_players, bot, max_turns, dev_before_roll, player_trading, max
     return game, last
 
 
+def run_game(bots, seed, max_turns=2000, **game_options):
+    """Play one game with a separate bot in each seat. Returns the finished Game."""
+    game = Game(len(bots), seed, max_turns, **game_options)
+    legal_actions = game.legal_actions
+    apply = game.apply
+    while not game.done:
+        bot = bots[game.to_move]
+        apply(bot.choose(game, legal_actions(bot.lists_offers)))
+    return game
+
+
 def _play_batch(args):
     seeds, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers = args
     return [play_game_stats(seed, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers) for seed in seeds]

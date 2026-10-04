@@ -490,3 +490,65 @@ def test_random_games_with_free_trading_finish_and_keep_invariants(seed):
             check_invariants(game)
     check_invariants(game)
     assert game.winner == winner
+
+
+# ---------------------------------------------------------------- phased bots and openings
+
+from src.engine import OPENINGS, PhasedBot  # noqa: E402
+from src.engine import openings as opening_experiment  # noqa: E402
+from src.engine.simulate import run_game  # noqa: E402
+
+
+def test_pips_opening_takes_the_most_productive_spot_first():
+    game = Game(4, seed=4)
+    actions = game.legal_actions()
+    choice = PhasedBot("pips").choose(game, actions)
+    best = max(game.node_pips[a & 255] for a in actions)
+    assert game.node_pips[choice & 255] == best
+
+
+@pytest.mark.parametrize("name", sorted(OPENINGS))
+def test_every_opening_makes_legal_placements(name):
+    game = Game(4, seed=9)
+    bot = PhasedBot(name)
+    while game.phase in (SETUP_SETTLE, SETUP_ROAD):
+        actions = game.legal_actions()
+        choice = bot.choose(game, actions)
+        assert choice in actions
+        game.apply(choice)
+    check_invariants(game)
+    assert all(len(game.settlements[p]) == 2 and len(game.edges[p]) == 2 for p in range(4))
+
+
+def test_phased_bot_only_uses_its_opening_during_set_up():
+    calls = []
+
+    class Recorder:
+        lists_offers = False
+
+        def choose(self, game, actions):
+            calls.append(game.phase)
+            return actions[0]
+
+    bot = PhasedBot("pips", play=Recorder())
+    game = Game(4, seed=2, max_turns=5)
+    while not game.done:
+        game.apply(bot.choose(game, game.legal_actions(bot.lists_offers)))
+    assert calls and all(phase > SETUP_ROAD for phase in calls)
+
+
+def test_run_game_gives_each_seat_its_own_bot():
+    bots = [PhasedBot("pips"), PhasedBot("random"), PhasedBot("random"), PhasedBot("random")]
+    first = run_game(bots, seed=6)
+    second = run_game(bots, seed=6)
+    assert first.done and first.winner == second.winner and first.turn == second.turn
+
+
+def test_opening_comparison_counts_every_game_and_is_repeatable():
+    totals = opening_experiment.compare(["random", "pips"], games=40, seed=1)
+    assert set(totals) == {"random", "pips"}
+    for wins, finished in totals.values():
+        assert 0 <= wins <= finished <= 40
+    assert totals == opening_experiment.compare(["random", "pips"], games=40, seed=1)
+    rows = opening_experiment.summarize(totals, 4)
+    assert rows[0][1] >= rows[1][1]

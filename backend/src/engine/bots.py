@@ -14,12 +14,13 @@ from .game import (
     PIPS,
     ROBBER,
     ROLL,
+    SETUP_ROAD,
     SETUP_SETTLE,
     TRADE_PICK,
     TRADE_RESPONSE,
 
 )
-from .topology import HEX_NODES, NODE_HEXES
+from .topology import EDGE_NODES, HEX_NODES, NODE_HEXES, NODE_NEIGHBORS
 
 _CITY_COST = (0, 0, 3, 2, 0)
 _SETTLEMENT_COST = (1, 1, 0, 1, 1)
@@ -314,5 +315,124 @@ class GreedyBot:
         return actions[-1]  # end turn
 
 
-BOTS = {"greedy": GreedyBot, "random": RandomBot}
+# ---------------------------------------------------------------- opening policies
+#
+# An opening policy chooses the two starting settlements and roads. It is a
+# function (game, actions) -> action, called only in the two set-up phases.
 
+_BRICK, _LUMBER, _ORE, _GRAIN, _WOOL = range(5)
+
+
+def _weighted_pips(game, node, weights):
+    total = 0.0
+    for h in NODE_HEXES[node]:
+        r = game.hex_res[h]
+        if r >= 0:
+            total += PIPS[game.hex_num[h]] * weights[r]
+    return total
+
+
+def _road_toward(game, actions, value):
+    """Point the road at the best spot that is still free to settle later."""
+    settled = game.last_settle
+    best = []
+    best_score = None
+    for a in actions:
+        e = a & 255
+        x, y = EDGE_NODES[e]
+        far = y if x == settled else x
+        score = max(
+            (value(game, n) for n in NODE_NEIGHBORS[far] if n != settled and game._free_spot(n)),
+            default=-1.0,
+        )
+        if best_score is None or score > best_score:
+            best, best_score = [a], score
+        elif score == best_score:
+            best.append(a)
+    return best[game.rng.randrange(len(best))]
+
+
+def _best(game, actions, value):
+    """The highest-valued settlement spot, breaking ties at random."""
+    best = []
+    best_score = None
+    for a in actions:
+        score = value(game, a & 255)
+        if best_score is None or score > best_score:
+            best, best_score = [a], score
+        elif score == best_score:
+            best.append(a)
+    return best[game.rng.randrange(len(best))]
+
+
+def _opening(value):
+    def policy(game, actions):
+        if game.phase == SETUP_SETTLE:
+            return _best(game, actions, value)
+        return _road_toward(game, actions, value)
+
+    return policy
+
+
+def opening_random(game, actions):
+    """Any legal spot, any legal road."""
+    return actions[game.rng.randrange(len(actions))]
+
+
+def _pips(game, node):
+    return game.node_pips[node]
+
+
+def _balanced(game, node):
+    resources = {game.hex_res[h] for h in NODE_HEXES[node] if game.hex_res[h] >= 0}
+    return game.node_pips[node] + 2.0 * len(resources)
+
+
+def _ore_grain(game, node):
+    return _weighted_pips(game, node, (0.5, 0.5, 1.5, 1.5, 1.0))
+
+
+def _brick_lumber(game, node):
+    return _weighted_pips(game, node, (1.5, 1.5, 0.5, 1.0, 1.0))
+
+
+def _port(game, node):
+    return game.node_pips[node] + (3.0 if game.port_of_node[node] >= 0 else 0.0)
+
+
+OPENINGS = {
+    "random": opening_random,
+    # Most dice pips: the spots that produce most often.
+    "pips": _opening(_pips),
+    # Pips plus a bonus for each different resource touched.
+    "balanced": _opening(_balanced),
+    # Favour ore and grain, the city and development card resources.
+    "ore_grain": _opening(_ore_grain),
+    # Favour brick and lumber, the road and settlement resources.
+    "brick_lumber": _opening(_brick_lumber),
+    # Pips plus a bonus for sitting on a harbour.
+    "port": _opening(_port),
+}
+
+
+class PhasedBot:
+    """A bot assembled from one policy per phase of the game.
+
+    ``opening`` places the two starting settlements and roads. ``play`` makes
+    every decision after that; it defaults to pure chance, so differences in
+    results come from the opening alone.
+    """
+
+    def __init__(self, opening="random", play=None):
+        self.opening_name = opening
+        self.opening = OPENINGS[opening]
+        self.play = play or RandomBot()
+        self.lists_offers = self.play.lists_offers
+
+    def choose(self, game, actions):
+        if game.phase <= SETUP_ROAD:
+            return self.opening(game, actions)
+        return self.play.choose(game, actions)
+
+
+BOTS = {"greedy": GreedyBot, "random": RandomBot}
