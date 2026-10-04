@@ -450,25 +450,43 @@ def test_greedy_bots_trade_with_each_other():
     assert summarize(results, 4)["avg_player_trades"] > 0
 
 
-def test_greedy_bot_offers_a_bundle_for_everything_it_is_missing():
+def test_greedy_bot_only_offers_spare_cards_for_cards_it_is_missing():
     # Player 0 has a settlement to upgrade: a city costs 3 ore and 2 grain.
-    game = _trading_game([cards(wool=6, lumber=2), cards(ore=3, grain=2), EMPTY, EMPTY])
-    offer = GreedyBot().choose(game, game.legal_actions(False))
-    assert kind_of(offer) == A_OFFER
-    give, get = decode_offer(offer)
-    assert get == cards(ore=3, grain=2)
-    assert give == cards(wool=5)
+    for seed in range(20):
+        game = _trading_game([cards(wool=6, lumber=2), cards(ore=3, grain=2), EMPTY, EMPTY], seed=seed)
+        offer = GreedyBot().choose(game, game.legal_actions(False))
+        assert kind_of(offer) == A_OFFER
+        give, get = decode_offer(offer)
+        assert give[ORE] == give[GRAIN] == 0
+        assert all(get[r] <= need for r, need in enumerate(cards(ore=3, grain=2)))
+        assert 1 <= sum(get) <= sum(give) <= 2 * sum(get)
 
 
-def test_greedy_bot_sweetens_a_rejected_offer_with_a_superset():
-    game = _trading_game([cards(wool=6, lumber=2), cards(ore=3, grain=2), EMPTY, EMPTY])
-    bot = GreedyBot()
-    first = bot.choose(game, game.legal_actions(False))
-    game.apply(first)
-    game.apply(action(A_REJECT))
-    second = bot.choose(game, game.legal_actions(False))
-    assert kind_of(second) == A_OFFER
-    give_1, get_1 = decode_offer(first)
-    give_2, get_2 = decode_offer(second)
-    assert get_2 == get_1
-    assert all(b >= a for a, b in zip(give_1, give_2)) and sum(give_2) == sum(give_1) + 1
+def test_random_bot_proposes_legal_trades_of_any_size():
+    sizes = set()
+    for seed in range(300):
+        game = _trading_game([cards(brick=4, wool=3), cards(ore=5, grain=2), cards(lumber=3), EMPTY], seed=seed)
+        act = RandomBot().choose(game, game.legal_actions(False))
+        if kind_of(act) == A_OFFER:
+            give, get = decode_offer(act)
+            assert game.can_offer(give, get)
+            sizes.add(sum(give) + sum(get))
+    assert len(sizes) > 5  # many different sizes, not a fixed shape
+    assert max(sizes) > 4
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_random_games_with_free_trading_finish_and_keep_invariants(seed):
+    winner, turns, move, points, trades = play_game_stats(seed, bot="random")
+    assert winner >= 0
+    assert trades > 0
+    game = Game(4, seed=seed)
+    bot = RandomBot()
+    steps = 0
+    while not game.done:
+        game.apply(bot.choose(game, game.legal_actions(bot.lists_offers)))
+        steps += 1
+        if steps % 50 == 0:
+            check_invariants(game)
+    check_invariants(game)
+    assert game.winner == winner

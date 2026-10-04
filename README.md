@@ -8,7 +8,7 @@ A Catan board simulator: a Python API that generates boards and a React app that
 
 ## What it does today
 
-- **Game engine:** plays complete games of Catan from setup to a 10-point win, with computer players that trade with each other, at about 130 games per second on one core with unlimited trading
+- **Game engine:** plays complete games of Catan from setup to a 10-point win, with every decision made by chance, at about 115 games per second on one core
 - **Board API:** generates a classic 19-hex board in the 3-4-5-4-3 layout and serves it as JSON from FastAPI
 - **Web app:** renders the board as SVG in the browser, with red 6s and 8s and the robber starting on the desert
 
@@ -24,28 +24,22 @@ uv run python -m src.engine.simulate --games 100000 --workers 16
 ```
 
 ```
-100000 games, 4 greedy bots, 16 worker(s)
-  time           68.12 s
-  speed          1,468 games/s
-  finished       99930 (99.9%)
-  avg turns      84
-  player trades  12.4 per game
-  wins by seat   1: 21.5%  2: 24.0%  3: 26.2%  4: 28.2%
+100000 games, 4 random bots, 16 worker(s)
+  time           80.32 s
+  speed          1,245 games/s
+  finished       100000 (100.0%)
+  avg turns      291
+  player trades  143.9 per game
+  wins by seat   1: 25.0%  2: 25.0%  3: 25.0%  4: 25.1%
 ```
 
-That run was on a 16-core Windows desktop, with unlimited trading between players. One core does about 130 games per second. Trading is the main cost, so there are two faster settings:
+That run was on a 16-core Windows desktop. One core does about 115 games per second.
 
-| Setting | Games per second (16 workers) | Turns per game |
-|---|---|---|
-| Unlimited offers (default) | 1,468 | 84 |
-| `--max-offers 3` | 2,029 | 85 |
-| `--no-player-trading` | 3,472 | 101 |
+By default every player is the random model: the rules engine plus chance, with no strategy. Each decision is a uniform random pick among what the rules allow, including which trades to propose and whether to accept them. Under pure chance no seat has an advantage.
 
-Add `--plot ../docs` to save two charts. Later seats won more often with these bots:
+Add `--plot ../docs` to save two charts:
 
-![Wins by seat over 99,924 finished games](docs/wins_by_seat.png)
-
-Cities decided most games, and about a fifth ended on a victory point card:
+![Wins by seat over 100,000 games](docs/wins_by_seat.png)
 
 ![How games were won](docs/win_conditions.png)
 
@@ -59,20 +53,22 @@ Rules follow the official CATAN base game rulebook (2020 edition), including pla
 
 **Players:**
 
-- `greedy` builds the most valuable thing it can afford and trades toward its next purchase, with other players first and the bank second. It asks for everything it is missing in one bundle and adds cards to its offer each time it is turned down. It accepts a trade that brings its own next purchase closer. About one game in a thousand stalls and is stopped at the turn limit.
-- `random` picks any legal move. Games take about three times as many turns.
+- `random` (default) is pure chance. On its turn, proposing a trade is one more option alongside its other legal moves; a proposal is a random bundle of its own cards for a random bundle of one opponent's cards, of any size. It accepts or refuses offers on a coin flip.
+- `greedy` is a simple strategy, kept for comparison: it builds the most valuable thing it can afford and trades toward its next purchase. Games are about a third as long. Later seats win more often with it, and about one game in a thousand stalls at the turn limit.
+
+Options: `--bot greedy`, `--max-offers N` to cap trade offers per turn, `--no-player-trading` for bank and port trades only.
 
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 
 Using it from Python:
 
 ```python
-from src.engine import Game, GreedyBot
+from src.engine import Game, RandomBot
 
 game = Game(num_players=4, seed=1)
-bot = GreedyBot()
+bot = RandomBot()
 while not game.done:
-    game.apply(bot.choose(game, game.legal_actions()))
+    game.apply(bot.choose(game, game.legal_actions(bot.lists_offers)))
 print(game.winner, game.turn)
 ```
 

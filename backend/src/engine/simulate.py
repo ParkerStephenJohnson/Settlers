@@ -23,13 +23,13 @@ OTHER_MOVE = "Other"
 POINT_SOURCES = ("Settlements", "Cities", "Victory point cards", "Longest Road", "Largest Army")
 
 
-def play_game(seed, num_players=4, bot="greedy", max_turns=2000, dev_before_roll=True, player_trading=True, max_offers=None):
+def play_game(seed, num_players=4, bot="random", max_turns=2000, dev_before_roll=True, player_trading=True, max_offers=None):
     """Play one full game. Returns (winner, turns, final points per player)."""
     game, _ = _run(seed, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers)
     return game.winner, game.turn, [game.victory_points(p) for p in range(num_players)]
 
 
-def play_game_stats(seed, num_players=4, bot="greedy", max_turns=2000, dev_before_roll=True, player_trading=True, max_offers=None):
+def play_game_stats(seed, num_players=4, bot="random", max_turns=2000, dev_before_roll=True, player_trading=True, max_offers=None):
     """Play one game and describe how it was won.
 
     Returns (winner, turns, winning move, points by source, player trades),
@@ -69,7 +69,7 @@ def _play_batch(args):
     return [play_game_stats(seed, num_players, bot, max_turns, dev_before_roll, player_trading, max_offers) for seed in seeds]
 
 
-def simulate(games, num_players=4, bot="greedy", workers=1, seed=0, max_turns=2000, dev_before_roll=True, player_trading=True, max_offers=None):
+def simulate(games, num_players=4, bot="random", workers=1, seed=0, max_turns=2000, dev_before_roll=True, player_trading=True, max_offers=None):
     """Play ``games`` games. Returns one play_game_stats tuple per game."""
     seeds = range(seed, seed + games)
     if workers <= 1:
@@ -205,7 +205,8 @@ def main():
     parser = argparse.ArgumentParser(description="Simulate Catan games")
     parser.add_argument("--games", type=int, default=1000)
     parser.add_argument("--players", type=int, default=4, choices=(2, 3, 4))
-    parser.add_argument("--bot", default="greedy", choices=sorted(BOTS))
+    parser.add_argument("--bot", default="random", choices=sorted(BOTS),
+                        help="random: pure chance (default); greedy: a simple strategy")
     parser.add_argument("--workers", type=int, default=1, help=f"processes to use (this machine has {os.cpu_count()})")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-turns", type=int, default=2000)

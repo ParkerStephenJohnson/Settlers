@@ -27,12 +27,50 @@ _DEV_COST = (0, 0, 1, 1, 1)
 
 
 class RandomBot:
-    """Picks uniformly among legal actions. Games are long; useful as a baseline."""
+    """Pure chance: every decision is a uniform random pick among what the rules allow.
 
-    lists_offers = True
+    On its turn it treats "propose a trade" as one more option alongside its
+    other legal actions. A proposal is a random bundle of its own cards for a
+    random bundle of one opponent's cards, of any size. It accepts or refuses
+    other players' offers on a coin flip.
+    """
+
+    lists_offers = False  # it builds its own offers
 
     def choose(self, game, actions):
-        return actions[game.rng.randrange(len(actions))]
+        rng = game.rng
+        count = len(actions)
+        if game.phase == MAIN and game.offers_left and game.player_trading:
+            pick = rng.randrange(count + 1)
+            if pick < count:
+                return actions[pick]
+            offer = self._random_offer(game, rng)
+            if offer:
+                return offer
+        return actions[rng.randrange(count)]
+
+    @staticmethod
+    def _random_offer(game, rng):
+        p = game.current
+        hand = game.res[p]
+        if not any(hand):
+            return 0
+        others = [q for q in range(game.n) if q != p and any(game.res[q])]
+        if not others:
+            return 0
+        theirs = game.res[others[rng.randrange(len(others))]]
+
+        give = [rng.randrange(hand[r] + 1) for r in range(5)]
+        if not any(give):
+            held = [r for r in range(5) if hand[r]]
+            give[held[rng.randrange(len(held))]] = 1
+        get = [0 if give[r] else rng.randrange(theirs[r] + 1) for r in range(5)]
+        if not any(get):
+            wanted = [r for r in range(5) if not give[r] and theirs[r]]
+            if not wanted:
+                return 0
+            get[wanted[rng.randrange(len(wanted))]] = 1
+        return game.try_offer(give, get)
 
 
 class GreedyBot:
@@ -42,10 +80,9 @@ class GreedyBot:
     settle), development card, then trades toward its next purchase: first
     with other players, then with the bank.
 
-    Its offers start generous to itself and get sweeter. It asks for
-    everything it is missing in one bundle, first for an equal number of spare
-    cards and then adding more, each offer a superset of the last, up to two
-    cards for one. Then it asks for single cards, paying up to three.
+    Its offers follow no fixed order. Each time, it picks at random among the
+    offers it would be happy with: some or all of what it is missing, for up to
+    twice as many of its spare cards.
 
     It accepts a trade that moves it closer to its own next purchase, or that
     leaves it no further away with more cards in hand, unless the proposer is
@@ -126,38 +163,31 @@ class GreedyBot:
         total_spare = sum(spare)
         if not total_spare:
             return None
-        need = sum(missing)
+        rng = game.rng
         try_offer = game.try_offer
-        order = sorted(range(5), key=lambda r: -spare[r])
-
-        # Everything missing at once. Start one-for-one and keep adding spare
-        # cards, so each offer is a superset of the last, up to two-for-one.
-        for size in range(need, min(total_spare, 2 * need) + 1):
+        spare_types = [r for r in range(5) if spare[r]]
+        missing_types = [r for r in range(5) if missing[r]]
+        for _ in range(4):  # a few tries at an offer that has not been turned down
+            get = [0] * 5
+            if rng.randrange(2):
+                get = missing[:]
+            else:
+                t = missing_types[rng.randrange(len(missing_types))]
+                get[t] = 1 + rng.randrange(missing[t])
+            asked = sum(get)
+            size = min(total_spare, asked + rng.randrange(asked + 1))
             give = [0] * 5
             left = size
-            for r in order:
-                take = spare[r] if spare[r] < left else left
-                give[r] = take
-                left -= take
-                if not left:
+            while left:
+                r = spare_types[rng.randrange(len(spare_types))]
+                if give[r] < spare[r] and not get[r]:
+                    give[r] += 1
+                    left -= 1
+                elif all(give[x] >= spare[x] or get[x] for x in spare_types):
                     break
-            offer = try_offer(give, missing)
+            offer = try_offer(give, get)
             if offer:
                 return offer
-
-        # One missing card at a time from the biggest pile, paying up to three.
-        if need > 1:
-            biggest = order[0]
-            for count in range(1, min(spare[biggest], 3) + 1):
-                give = [0] * 5
-                give[biggest] = count
-                for t in range(5):
-                    if missing[t] and t != biggest:
-                        get = [0] * 5
-                        get[t] = 1
-                        offer = try_offer(give, get)
-                        if offer:
-                            return offer
         return None
 
     def _roll(self, game, actions):
