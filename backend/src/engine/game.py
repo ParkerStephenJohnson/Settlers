@@ -10,15 +10,21 @@ are ints: ``(kind << 8) | argument``. The loop is::
 
 Rules covered: setup draft, production with bank shortages, the robber and
 discards, roads, settlements, cities, development cards, ports and bank trades,
-longest road, largest army, and winning at 10 points.
+trades between players, longest road, largest army, and winning at 10 points.
 
-Not covered: trading between players. Number tokens are placed at random with
-no restriction on adjacent 6s and 8s.
+Trades between players are offers of any bundle of cards for any other bundle,
+built with ``offer_action(give, get)``. Everyone holding the requested cards
+answers in seat order; if several accept, the proposer picks. There is no limit
+on the number of offers in a turn, but an offer that was just turned down
+cannot be repeated until a trade goes through or the turn ends.
+
+Rules follow the official CATAN base game rulebook and almanac (2020 edition).
 """
 import random
 
 from .topology import (
     EDGE_NODES,
+    HEX_NEIGHBORS,
     HEX_NODES,
     NODE_EDGES,
     NODE_HEXES,
@@ -38,7 +44,7 @@ DESERT = -1
 KNIGHT, VICTORY_POINT, ROAD_BUILDING, YEAR_OF_PLENTY, MONOPOLY = range(5)
 
 # Phases
-SETUP_SETTLE, SETUP_ROAD, ROLL, MAIN, ROBBER, DISCARD, FREE_ROAD = range(7)
+SETUP_SETTLE, SETUP_ROAD, ROLL, MAIN, ROBBER, DISCARD, FREE_ROAD, TRADE_RESPONSE, TRADE_PICK = range(9)
 
 # Action kinds
 (
@@ -55,7 +61,11 @@ SETUP_SETTLE, SETUP_ROAD, ROLL, MAIN, ROBBER, DISCARD, FREE_ROAD = range(7)
     A_TRADE,
     A_ROBBER,
     A_DISCARD,
-) = range(13)
+    A_OFFER,
+    A_ACCEPT,
+    A_REJECT,
+    A_CONFIRM,
+) = range(17)
 
 GENERIC_PORT = 5
 WIN_POINTS = 10
@@ -71,9 +81,51 @@ def action(kind, arg=0):
     return (kind << 8) | arg
 
 
+def kind_of(act):
+    """The action kind. Use this rather than ``act >> 8`` when offers may be present."""
+    return (act >> 8) & 255
+
+
+def offer_action(give, get):
+    """An offer of ``give`` for ``get``, each a list of five card counts by resource."""
+    return (
+        (
+            give[0] | give[1] << 5 | give[2] << 10 | give[3] << 15 | give[4] << 20
+            | get[0] << 25 | get[1] << 30 | get[2] << 35 | get[3] << 40 | get[4] << 45
+        ) << 16
+    ) | (A_OFFER << 8)
+
+
+def decode_offer(act):
+    """The (give, get) card counts of an offer action."""
+    payload = act >> 16
+    return (
+        [(payload >> (5 * r)) & 31 for r in range(5)],
+        [(payload >> (25 + 5 * r)) & 31 for r in range(5)],
+    )
+
+
+def _unit(r, count=1):
+    cards = [0] * 5
+    cards[r] = count
+    return cards
+
+
+# One-for-one and two-for-one offers, listed by legal_actions for bots that do
+# not build their own: _SIMPLE_OFFERS[give][get] = (one-for-one, two-for-one).
+_SIMPLE_OFFERS = [
+    [
+        (offer_action(_unit(i), _unit(j)), offer_action(_unit(i, 2), _unit(j))) if i != j else None
+        for j in range(5)
+    ]
+    for i in range(5)
+]
+
+
 class Game:
     __slots__ = (
-        "n", "rng", "max_turns",
+        "n", "rng", "max_turns", "dev_before_roll", "player_trading", "max_offers",
+        "offers_left", "offers_made", "offer", "player_trades", "responders", "responder_index", "responder", "acceptors",
         "hex_res", "hex_num", "hexes_by_roll", "robber", "node_pips", "port_of_node",
         "node_owner", "node_level", "edge_owner",
         "res", "bank", "rates",
@@ -83,30 +135,57 @@ class Game:
         "road_len", "longest_road", "largest_army",
         "current", "phase", "turn", "winner", "done",
         "setup_order", "setup_index", "last_settle",
-        "after_robber", "free_roads", "pending_discard", "discarder",
+        "after_robber", "after_free", "free_roads", "pending_discard", "discarder",
     )
 
-    def __init__(self, num_players=4, seed=None, max_turns=2000):
+    def __init__(self, num_players=4, seed=None, max_turns=2000, dev_before_roll=True,
+                 player_trading=True, max_offers=None):
         self.n = n = num_players
         self.rng = rng = random.Random(seed)
         self.max_turns = max_turns
+        # Official rule: a development card may be played before the roll.
+        # Pass False for the house rule that cards wait until after it.
+        self.dev_before_roll = dev_before_roll
+        # Rulebook: on your turn you may trade with any player; the others may
+        # only trade with you. max_offers optionally caps proposals per turn;
+        # None means no limit.
+        self.player_trading = player_trading
+        self.max_offers = max_offers
+        self.offers_left = -1 if max_offers is None else max_offers
+        self.offers_made = set()  # offers turned down since the last trade
+        self.offer = None  # (give counts, get counts)
+        self.player_trades = 0
+        self.responders = []
+        self.responder_index = 0
+        self.responder = -1
+        self.acceptors = []
 
         # Board
         self.hex_res = hex_res = _HEX_RESOURCES[:]
         rng.shuffle(hex_res)
+        self.robber = hex_res.index(DESERT)
         numbers = _NUMBERS[:]
-        rng.shuffle(numbers)
-        self.hex_num = hex_num = [0] * NUM_HEXES
+        # Rulebook: in a random set-up the red numbers (6 and 8) must not be
+        # next to each other. Reshuffle until that holds.
+        while True:
+            rng.shuffle(numbers)
+            hex_num = [0] * NUM_HEXES
+            i = 0
+            for h in range(NUM_HEXES):
+                if hex_res[h] != DESERT:
+                    hex_num[h] = numbers[i]
+                    i += 1
+            if not any(
+                hex_num[h] in (6, 8) and hex_num[other] in (6, 8)
+                for h in range(NUM_HEXES)
+                for other in HEX_NEIGHBORS[h]
+            ):
+                break
+        self.hex_num = hex_num
         self.hexes_by_roll = by_roll = [[] for _ in range(13)]
-        self.robber = 0
-        i = 0
         for h in range(NUM_HEXES):
-            if hex_res[h] == DESERT:
-                self.robber = h
-            else:
-                hex_num[h] = numbers[i]
-                by_roll[numbers[i]].append(h)
-                i += 1
+            if hex_num[h]:
+                by_roll[hex_num[h]].append(h)
         self.node_pips = [sum(PIPS.get(hex_num[h], 0) for h in NODE_HEXES[node]) for node in range(NUM_NODES)]
 
         ports = _PORTS[:]
@@ -155,6 +234,7 @@ class Game:
         self.done = False
         self.last_settle = -1
         self.after_robber = MAIN
+        self.after_free = MAIN
         self.free_roads = 0
         self.pending_discard = [0] * n
         self.discarder = -1
@@ -163,7 +243,11 @@ class Game:
 
     @property
     def to_move(self):
-        return self.discarder if self.phase == DISCARD else self.current
+        if self.phase == DISCARD:
+            return self.discarder
+        if self.phase == TRADE_RESPONSE:
+            return self.responder
+        return self.current
 
     def victory_points(self, p):
         return (
@@ -198,21 +282,70 @@ class Game:
     def settlement_spots(self, p):
         return [node for node in self.touch[p] if self._free_spot(node)]
 
-    def legal_actions(self):
+    def can_offer(self, give, get):
+        """Whether the current player may offer the cards ``give`` for the cards ``get``.
+
+        Both sides must hand over at least one card (no gifts), no resource may
+        appear on both sides, and someone must hold everything asked for.
+        """
+        return bool(self.try_offer(give, get))
+
+    def try_offer(self, give, get):
+        """The offer action for ``give`` and ``get`` if it is legal now, else 0."""
+        if not (self.offers_left and self.player_trading) or self.phase != MAIN:
+            return 0
+        p = self.current
+        hand = self.res[p]
+        giving = getting = 0
+        for r in range(5):
+            g, t = give[r], get[r]
+            if g > hand[r] or (g and t):
+                return 0
+            giving += g
+            getting += t
+        if not giving or not getting:
+            return 0
+        act = offer_action(give, get)
+        if act in self.offers_made:
+            return 0
+        res = self.res
+        for q in range(self.n):
+            if q != p:
+                other = res[q]
+                if (other[0] >= get[0] and other[1] >= get[1] and other[2] >= get[2]
+                        and other[3] >= get[3] and other[4] >= get[4]):
+                    return act
+        return 0
+
+    def legal_actions(self, offers=True):
+        """Every legal action for the player to move.
+
+        Trade offers are unbounded, so only one-for-one and two-for-one
+        offers are listed. Build anything else with ``offer_action`` after
+        checking ``can_offer``. Pass ``offers=False`` to list none.
+        """
         phase = self.phase
         p = self.current
         if phase == MAIN:
-            return self._main_actions(p)
+            return self._main_actions(p, offers)
         if phase == ROLL:
+            # Rulebook: one development card may be played at any time during
+            # your turn, "even before you roll the dice".
             acts = [A_ROLL << 8]
-            if not self.dev_played and self.dev_hand[p][KNIGHT]:
-                acts.append(A_KNIGHT << 8)
+            if self.dev_before_roll and not self.dev_played:
+                self._dev_actions(p, acts)
             return acts
         if phase == ROBBER:
             return self._robber_actions(p)
         if phase == DISCARD:
             hand = self.res[self.discarder]
             return [(A_DISCARD << 8) | r for r in range(5) if hand[r]]
+        if phase == TRADE_RESPONSE:
+            return [A_ACCEPT << 8, A_REJECT << 8]
+        if phase == TRADE_PICK:
+            acts = [(A_CONFIRM << 8) | q for q in self.acceptors]
+            acts.append(A_REJECT << 8)
+            return acts
         if phase == FREE_ROAD:
             return [(A_ROAD << 8) | e for e in self.road_spots(p)]
         if phase == SETUP_SETTLE:
@@ -221,15 +354,13 @@ class Game:
         edge_owner = self.edge_owner
         return [(A_ROAD << 8) | e for e, _ in NODE_EDGES[self.last_settle] if edge_owner[e] < 0]
 
-    def _main_actions(self, p):
+    def _main_actions(self, p, offers=True):
         hand = self.res[p]
         brick, lumber, ore, grain, wool = hand
         acts = []
-        spots = None
 
         if brick and lumber and self.roads_left[p]:
-            spots = self.road_spots(p)
-            for e in spots:
+            for e in self.road_spots(p):
                 acts.append((A_ROAD << 8) | e)
         if brick and lumber and grain and wool and self.settlements_left[p]:
             for node in self.touch[p]:
@@ -242,24 +373,7 @@ class Game:
             acts.append(A_BUY << 8)
 
         if not self.dev_played:
-            dev = self.dev_hand[p]
-            if dev[KNIGHT]:
-                acts.append(A_KNIGHT << 8)
-            if dev[ROAD_BUILDING] and self.roads_left[p]:
-                if spots is None:
-                    spots = self.road_spots(p)
-                if spots:
-                    acts.append(A_ROAD_BUILDING << 8)
-            bank = self.bank
-            if dev[YEAR_OF_PLENTY]:
-                for i in range(5):
-                    if bank[i]:
-                        for j in range(i, 5):
-                            if bank[j] and (i != j or bank[i] >= 2):
-                                acts.append((A_YEAR_OF_PLENTY << 8) | (i * 5 + j))
-            if dev[MONOPOLY]:
-                for r in range(5):
-                    acts.append((A_MONOPOLY << 8) | r)
+            self._dev_actions(p, acts)
 
         rates = self.rates[p]
         bank = self.bank
@@ -269,8 +383,41 @@ class Game:
                     if j != i and bank[j]:
                         acts.append((A_TRADE << 8) | (i * 5 + j))
 
+        if offers and self.offers_left and self.player_trading:
+            res = self.res
+            made = self.offers_made
+            wanted = [any(res[q][j] for q in range(self.n) if q != p) for j in range(5)]
+            for i in range(5):
+                have = hand[i]
+                if have:
+                    row = _SIMPLE_OFFERS[i]
+                    for j in range(5):
+                        if j != i and wanted[j]:
+                            one, two = row[j]
+                            if one not in made:
+                                acts.append(one)
+                            if have >= 2 and two not in made:
+                                acts.append(two)
+
         acts.append(A_END << 8)
         return acts
+
+    def _dev_actions(self, p, acts):
+        dev = self.dev_hand[p]
+        if dev[KNIGHT]:
+            acts.append(A_KNIGHT << 8)
+        if dev[ROAD_BUILDING] and self.roads_left[p] and self.road_spots(p):
+            acts.append(A_ROAD_BUILDING << 8)
+        if dev[YEAR_OF_PLENTY]:
+            bank = self.bank
+            for i in range(5):
+                if bank[i]:
+                    for j in range(i, 5):
+                        if bank[j] and (i != j or bank[i] >= 2):
+                            acts.append((A_YEAR_OF_PLENTY << 8) | (i * 5 + j))
+        if dev[MONOPOLY]:
+            for r in range(5):
+                acts.append((A_MONOPOLY << 8) | r)
 
     def _robber_actions(self, p):
         node_owner = self.node_owner
@@ -294,7 +441,7 @@ class Game:
     # ------------------------------------------------------------------ actions
 
     def apply(self, act):
-        kind = act >> 8
+        kind = (act >> 8) & 255
         arg = act & 255
         p = self.current
 
@@ -327,6 +474,19 @@ class Game:
             self.bank[give] += rate
             self.res[p][get] += 1
             self.bank[get] -= 1
+        elif kind == A_OFFER:
+            self._offer(p, act)
+        elif kind == A_ACCEPT:
+            self.acceptors.append(self.responder)
+            self._next_responder(p)
+        elif kind == A_REJECT:
+            if self.phase == TRADE_RESPONSE:
+                self._next_responder(p)
+            else:  # the proposer backs out of TRADE_PICK
+                self.phase = MAIN
+        elif kind == A_CONFIRM:
+            self._swap(p, arg)
+            self.phase = MAIN
         elif kind == A_ROBBER:
             self._move_robber(p, arg >> 3, (arg & 7) - 1)
         elif kind == A_DISCARD:
@@ -344,6 +504,7 @@ class Game:
             self.dev_hand[p][ROAD_BUILDING] -= 1
             self.dev_played = True
             self.free_roads = min(2, self.roads_left[p])
+            self.after_free = self.phase
             self.phase = FREE_ROAD
         elif kind == A_YEAR_OF_PLENTY:
             self.dev_hand[p][YEAR_OF_PLENTY] -= 1
@@ -379,6 +540,52 @@ class Game:
         bank[2] += ore
         bank[3] += grain
         bank[4] += wool
+
+    def _offer(self, p, act):
+        give, get = decode_offer(act)
+        if self.offers_left > 0:
+            self.offers_left -= 1
+        self.offers_made.add(act)
+        self.offer = (give, get)
+        res = self.res
+        n = self.n
+        # Only players holding everything asked for are asked, in seat order.
+        g0, g1, g2, g3, g4 = get
+        responders = []
+        for k in range(1, n):
+            q = (p + k) % n
+            other = res[q]
+            if other[0] >= g0 and other[1] >= g1 and other[2] >= g2 and other[3] >= g3 and other[4] >= g4:
+                responders.append(q)
+        self.responders = responders
+        self.acceptors = []
+        self.responder_index = 0
+        self.responder = self.responders[0]
+        self.phase = TRADE_RESPONSE
+
+    def _next_responder(self, p):
+        self.responder_index += 1
+        if self.responder_index < len(self.responders):
+            self.responder = self.responders[self.responder_index]
+            return
+        self.responder = -1
+        if not self.acceptors:
+            self.phase = MAIN
+        elif len(self.acceptors) == 1:
+            self._swap(p, self.acceptors[0])
+            self.phase = MAIN
+        else:
+            self.phase = TRADE_PICK
+
+    def _swap(self, p, q):
+        give, get = self.offer
+        mine = self.res[p]
+        theirs = self.res[q]
+        for r in range(5):
+            mine[r] += get[r] - give[r]
+            theirs[r] += give[r] - get[r]
+        self.player_trades += 1
+        self.offers_made.clear()  # hands changed, so earlier offers may be worth repeating
 
     def _roll(self):
         rng = self.rng
@@ -498,7 +705,7 @@ class Game:
             self.free_roads -= 1
             if not self.free_roads or not self.roads_left[p] or not self.road_spots(p):
                 self.free_roads = 0
-                self.phase = MAIN
+                self.phase = self.after_free
 
     def _build_settlement(self, p, node):
         setup = self.phase == SETUP_SETTLE
@@ -553,6 +760,8 @@ class Game:
                 hand[card] += new[card]
                 new[card] = 0
         self.dev_played = False
+        self.offers_left = -1 if self.max_offers is None else self.max_offers
+        self.offers_made.clear()
         self.current = (p + 1) % self.n
         self.phase = ROLL
         self.turn += 1

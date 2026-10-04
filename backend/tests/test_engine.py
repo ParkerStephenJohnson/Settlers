@@ -2,17 +2,36 @@ import pytest
 
 from src.engine import Game, GreedyBot, RandomBot
 from src.engine.game import (
+    A_ACCEPT,
+    A_CONFIRM,
+    A_KNIGHT,
+    A_MONOPOLY,
+    A_OFFER,
+    A_REJECT,
     A_ROAD,
+    A_ROAD_BUILDING,
+    A_ROLL,
     A_SETTLE,
+    FREE_ROAD,
+    KNIGHT,
     MAIN,
+    MONOPOLY,
+    ROAD_BUILDING,
+    ROLL,
     SETUP_ROAD,
     SETUP_SETTLE,
+    TRADE_PICK,
+    TRADE_RESPONSE,
     WIN_POINTS,
     action,
+    decode_offer,
+    kind_of,
+    offer_action,
 )
-from src.engine.simulate import play_game, simulate
+from src.engine.simulate import play_game, play_game_stats, simulate, summarize
 from src.engine.topology import (
     COASTAL_EDGES,
+    HEX_NEIGHBORS,
     EDGE_NODES,
     HEX_NODES,
     NODE_EDGES,
@@ -199,3 +218,416 @@ def test_illegal_looking_actions_are_never_offered():
                     assert game.node_owner[arg] < 0
         game.apply(bot.choose(game, actions))
     assert action(A_ROAD, 3) >> 8 == A_ROAD
+
+
+def _after_setup(seed=0, **kwargs):
+    game = Game(4, seed=seed, **kwargs)
+    bot = GreedyBot()
+    while game.phase in (SETUP_SETTLE, SETUP_ROAD):
+        game.apply(bot.choose(game, game.legal_actions()))
+    assert game.phase == ROLL
+    return game
+
+
+@pytest.mark.parametrize("seed", range(50))
+def test_red_numbers_are_never_adjacent(seed):
+    # Rulebook, variable set-up: "the tokens with the red numbers must not be next to each other."
+    game = Game(4, seed=seed)
+    for h, number in enumerate(game.hex_num):
+        if number in (6, 8):
+            assert all(game.hex_num[other] not in (6, 8) for other in HEX_NEIGHBORS[h])
+    assert sorted(n for n in game.hex_num if n) == [2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9, 9, 10, 10, 11, 11, 12]
+
+
+def test_any_development_card_can_be_played_before_the_roll():
+    # Rulebook: "You can play the card at any time, even before you roll the dice."
+    game = _after_setup()
+    p = game.current
+    game.dev_hand[p][KNIGHT] = 1
+    game.dev_hand[p][MONOPOLY] = 1
+    game.dev_hand[p][ROAD_BUILDING] = 1
+    kinds = {a >> 8 for a in game.legal_actions()}
+    assert {A_ROLL, A_KNIGHT, A_MONOPOLY, A_ROAD_BUILDING} <= kinds
+
+
+def test_only_one_development_card_per_turn():
+    game = _after_setup()
+    p = game.current
+    game.dev_hand[p][MONOPOLY] = 2
+    game.apply(action(A_MONOPOLY, 0))
+    assert game.phase == ROLL
+    assert {a >> 8 for a in game.legal_actions()} == {A_ROLL}
+
+
+def test_road_building_before_the_roll_returns_to_the_roll():
+    game = _after_setup()
+    p = game.current
+    game.dev_hand[p][ROAD_BUILDING] = 1
+    game.apply(action(A_ROAD_BUILDING))
+    assert game.phase == FREE_ROAD
+    game.apply(game.legal_actions()[0])
+    game.apply(game.legal_actions()[0])
+    assert game.phase == ROLL
+    assert len(game.edges[p]) == 4
+
+
+def test_house_rule_can_forbid_cards_before_the_roll():
+    game = _after_setup(dev_before_roll=False)
+    game.dev_hand[game.current][KNIGHT] = 1
+    assert {a >> 8 for a in game.legal_actions()} == {A_ROLL}
+
+
+def test_a_card_bought_this_turn_cannot_be_played_until_the_next():
+    game = _after_setup()
+    p = game.current
+    game.dev_new[p][KNIGHT] = 1
+    assert A_KNIGHT not in {a >> 8 for a in game.legal_actions()}
+
+
+def test_win_statistics_add_up():
+    results = simulate(200, seed=11)
+    summary = summarize(results, 4)
+    assert summary["finished"] == sum(summary["wins"])
+    assert sum(count for _, count in summary["winning_moves"]) == summary["finished"]
+    for winner, turns, move, points, trades in results:
+        if winner >= 0:
+            assert sum(points) >= WIN_POINTS
+    assert play_game_stats(5) == play_game_stats(5)
+
+
+# ---------------------------------------------------------------- player trading
+
+BRICK, LUMBER, ORE, GRAIN, WOOL = range(5)
+
+
+def cards(**counts):
+    names = ("brick", "lumber", "ore", "grain", "wool")
+    return [counts.get(name, 0) for name in names]
+
+
+def _trading_game(hands, **kwargs):
+    """A game in the main phase of player 0's turn with the given hands."""
+    game = _after_setup(**kwargs)
+    for r in range(5):
+        game.bank[r] = 19 - sum(hand[r] for hand in hands)
+    game.res = [list(hand) for hand in hands]
+    game.phase = MAIN
+    return game
+
+
+def _listed_offers(game):
+    return [decode_offer(a) for a in game.legal_actions() if kind_of(a) == A_OFFER]
+
+
+EMPTY = cards()
+
+
+def test_single_acceptor_trades_immediately():
+    game = _trading_game([cards(brick=2), cards(ore=1), EMPTY, EMPTY])
+    game.apply(offer_action(cards(brick=1), cards(ore=1)))
+    assert game.phase == TRADE_RESPONSE
+    assert game.to_move == 1  # only player 1 holds ore, so only they are asked
+    game.apply(action(A_ACCEPT))
+    assert game.phase == MAIN
+    assert game.res[0] == cards(brick=1, ore=1)
+    assert game.res[1] == cards(brick=1)
+    assert game.player_trades == 1
+    check_invariants(game)
+
+
+def test_a_big_bundle_trade_moves_every_card():
+    game = _trading_game([cards(brick=3, wool=2, lumber=1), cards(ore=2, grain=4), EMPTY, EMPTY])
+    give, get = cards(brick=3, wool=2), cards(ore=2, grain=3)
+    assert game.can_offer(give, get)
+    game.apply(offer_action(give, get))
+    game.apply(action(A_ACCEPT))
+    assert game.res[0] == cards(lumber=1, ore=2, grain=3)
+    assert game.res[1] == cards(brick=3, wool=2, grain=1)
+    check_invariants(game)
+
+
+def test_offer_encoding_round_trips_up_to_nineteen_cards():
+    give, get = [19, 0, 7, 0, 1], [0, 19, 0, 12, 0]
+    assert decode_offer(offer_action(give, get)) == (give, get)
+    assert kind_of(offer_action(give, get)) == A_OFFER
+
+
+def test_only_players_holding_the_whole_bundle_are_asked():
+    game = _trading_game([cards(brick=1), cards(ore=1), cards(ore=1, grain=1), cards(grain=1)])
+    game.apply(offer_action(cards(brick=1), cards(ore=1, grain=1)))
+    assert game.responders == [2]
+
+
+def test_proposer_picks_among_several_acceptors():
+    game = _trading_game([cards(brick=1), cards(ore=1), cards(ore=1), cards(ore=1)])
+    game.apply(offer_action(cards(brick=1), cards(ore=1)))
+    assert game.to_move == 1
+    game.apply(action(A_ACCEPT))
+    assert game.to_move == 2
+    game.apply(action(A_REJECT))
+    assert game.to_move == 3
+    game.apply(action(A_ACCEPT))
+    assert game.phase == TRADE_PICK
+    assert game.to_move == 0
+    assert {a & 255 for a in game.legal_actions() if kind_of(a) == A_CONFIRM} == {1, 3}
+    game.apply(action(A_CONFIRM, 3))
+    assert game.phase == MAIN
+    assert game.res[0] == cards(ore=1)
+    assert game.res[3] == cards(brick=1)
+    assert game.res[1] == cards(ore=1)
+
+
+def test_rejected_offer_changes_nothing_and_cannot_be_repeated():
+    game = _trading_game([cards(brick=1), cards(ore=1), EMPTY, EMPTY])
+    give, get = cards(brick=1), cards(ore=1)
+    game.apply(offer_action(give, get))
+    game.apply(action(A_REJECT))
+    assert game.phase == MAIN
+    assert game.res[0] == cards(brick=1)
+    assert game.res[1] == cards(ore=1)
+    assert (give, get) not in _listed_offers(game)
+    assert not game.can_offer(give, get)
+
+
+def test_a_rejected_offer_can_be_made_again_after_a_trade():
+    game = _trading_game([cards(brick=2, wool=1), cards(ore=1, grain=1), EMPTY, EMPTY])
+    first = (cards(brick=1), cards(ore=1))
+    game.apply(offer_action(*first))
+    game.apply(action(A_REJECT))
+    assert not game.can_offer(*first)
+    game.apply(offer_action(cards(wool=1), cards(grain=1)))
+    game.apply(action(A_ACCEPT))
+    assert game.can_offer(*first)
+
+
+def test_there_is_no_limit_on_offers_in_a_turn():
+    game = _trading_game([cards(brick=19), cards(ore=1), EMPTY, EMPTY])
+    for count in range(1, 20):
+        offer = offer_action(cards(brick=count), cards(ore=1))
+        assert game.can_offer(cards(brick=count), cards(ore=1))
+        game.apply(offer)
+        game.apply(action(A_REJECT))
+    assert game.phase == MAIN
+    assert game.offers_left  # still open
+
+
+def test_offers_can_be_capped_per_turn():
+    game = _trading_game([cards(brick=1, lumber=1), cards(ore=1, grain=1, wool=1), EMPTY, EMPTY], max_offers=2)
+    game.apply(offer_action(cards(brick=1), cards(ore=1)))
+    game.apply(action(A_REJECT))
+    game.apply(offer_action(cards(brick=1), cards(grain=1)))
+    game.apply(action(A_REJECT))
+    assert not _listed_offers(game)
+    assert not game.can_offer(cards(lumber=1), cards(wool=1))
+
+
+def test_gifts_and_same_resource_swaps_are_not_allowed():
+    game = _trading_game([cards(brick=3, wool=1), cards(brick=1, ore=1), EMPTY, EMPTY])
+    assert not game.can_offer(cards(brick=1), EMPTY)  # a gift
+    assert not game.can_offer(EMPTY, cards(ore=1))  # asking for a gift
+    assert not game.can_offer(cards(brick=2), cards(brick=1))  # same resource both ways
+    assert not game.can_offer(cards(brick=1, wool=1), cards(wool=1, ore=1))
+    assert not game.can_offer(cards(brick=4), cards(ore=1))  # more than the hand holds
+    assert not game.can_offer(cards(brick=1), cards(grain=1))  # nobody has grain
+
+
+def test_listed_offers_are_one_and_two_for_one():
+    game = _trading_game([cards(brick=2), cards(brick=1, ore=1), EMPTY, EMPTY])
+    assert sorted(_listed_offers(game)) == sorted([
+        (cards(brick=1), cards(ore=1)),
+        (cards(brick=2), cards(ore=1)),
+    ])
+
+
+def test_player_trading_can_be_turned_off():
+    game = _trading_game([cards(brick=2), cards(ore=1), EMPTY, EMPTY], player_trading=False)
+    assert not _listed_offers(game)
+    assert not game.can_offer(cards(brick=1), cards(ore=1))
+
+
+def test_greedy_bots_trade_with_each_other():
+    results = simulate(100, seed=3)
+    assert summarize(results, 4)["avg_player_trades"] > 0
+
+
+def test_greedy_bot_only_offers_spare_cards_for_cards_it_is_missing():
+    # Player 0 has a settlement to upgrade: a city costs 3 ore and 2 grain.
+    for seed in range(20):
+        game = _trading_game([cards(wool=6, lumber=2), cards(ore=3, grain=2), EMPTY, EMPTY], seed=seed)
+        offer = GreedyBot().choose(game, game.legal_actions(False))
+        assert kind_of(offer) == A_OFFER
+        give, get = decode_offer(offer)
+        assert give[ORE] == give[GRAIN] == 0
+        assert all(get[r] <= need for r, need in enumerate(cards(ore=3, grain=2)))
+        assert 1 <= sum(get) <= sum(give) <= 2 * sum(get)
+
+
+def test_random_bot_proposes_legal_trades_of_any_size():
+    sizes = set()
+    for seed in range(300):
+        game = _trading_game([cards(brick=4, wool=3), cards(ore=5, grain=2), cards(lumber=3), EMPTY], seed=seed)
+        act = RandomBot().choose(game, game.legal_actions(False))
+        if kind_of(act) == A_OFFER:
+            give, get = decode_offer(act)
+            assert game.can_offer(give, get)
+            sizes.add(sum(give) + sum(get))
+    assert len(sizes) > 5  # many different sizes, not a fixed shape
+    assert max(sizes) > 4
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_random_games_with_free_trading_finish_and_keep_invariants(seed):
+    winner, turns, move, points, trades = play_game_stats(seed, bot="random")
+    assert winner >= 0
+    assert trades > 0
+    game = Game(4, seed=seed)
+    bot = RandomBot()
+    steps = 0
+    while not game.done:
+        game.apply(bot.choose(game, game.legal_actions(bot.lists_offers)))
+        steps += 1
+        if steps % 50 == 0:
+            check_invariants(game)
+    check_invariants(game)
+    assert game.winner == winner
+
+
+# ---------------------------------------------------------------- phased bots and openings
+
+from src.engine import OPENINGS, PhasedBot  # noqa: E402
+from src.engine import openings as opening_experiment  # noqa: E402
+from src.engine.simulate import run_game  # noqa: E402
+
+
+def test_pips_opening_takes_the_most_productive_spot_first():
+    game = Game(4, seed=4)
+    actions = game.legal_actions()
+    choice = PhasedBot("pips").choose(game, actions)
+    best = max(game.node_pips[a & 255] for a in actions)
+    assert game.node_pips[choice & 255] == best
+
+
+@pytest.mark.parametrize("name", sorted(OPENINGS))
+def test_every_opening_makes_legal_placements(name):
+    game = Game(4, seed=9)
+    bot = PhasedBot(name)
+    while game.phase in (SETUP_SETTLE, SETUP_ROAD):
+        actions = game.legal_actions()
+        choice = bot.choose(game, actions)
+        assert choice in actions
+        game.apply(choice)
+    check_invariants(game)
+    assert all(len(game.settlements[p]) == 2 and len(game.edges[p]) == 2 for p in range(4))
+
+
+def test_phased_bot_only_uses_its_opening_during_set_up():
+    calls = []
+
+    class Recorder:
+        lists_offers = False
+
+        def choose(self, game, actions):
+            calls.append(game.phase)
+            return actions[0]
+
+    bot = PhasedBot("pips", play=Recorder())
+    game = Game(4, seed=2, max_turns=5)
+    while not game.done:
+        game.apply(bot.choose(game, game.legal_actions(bot.lists_offers)))
+    assert calls and all(phase > SETUP_ROAD for phase in calls)
+
+
+def test_run_game_gives_each_seat_its_own_bot():
+    bots = [PhasedBot("pips"), PhasedBot("random"), PhasedBot("random"), PhasedBot("random")]
+    first = run_game(bots, seed=6)
+    second = run_game(bots, seed=6)
+    assert first.done and first.winner == second.winner and first.turn == second.turn
+
+
+def test_opening_comparison_counts_every_game_and_is_repeatable():
+    totals = opening_experiment.compare(["random", "pips"], games=40, seed=1)
+    assert set(totals) == {"random", "pips"}
+    for wins, finished in totals.values():
+        assert 0 <= wins <= finished <= 40
+    assert totals == opening_experiment.compare(["random", "pips"], games=40, seed=1)
+    rows = opening_experiment.summarize(totals, 4)
+    assert rows[0][1] >= rows[1][1]
+
+
+def test_tournament_fills_every_seat_with_a_different_opening():
+    names = ["pips", "balanced", "ore_grain", "brick_lumber", "port"]
+    totals = opening_experiment.tournament(names, games=60, seed=2)
+    assert set(totals) == set(names)
+    assert sum(wins for wins, _, _ in totals.values()) == 60  # one winner per game
+    assert sum(played for _, played, _ in totals.values()) == 60 * 4
+    assert totals == opening_experiment.tournament(names, games=60, seed=2)
+    with pytest.raises(ValueError):
+        opening_experiment.tournament(["pips", "balanced"], games=1)
+
+
+from src.engine import opening_search  # noqa: E402
+from src.engine.bots import DEFAULT_OPENING_PARAMS, OPENING_PARAM_RANGES, board_aware_opening  # noqa: E402
+
+
+def test_board_aware_opening_with_default_settings_is_the_pips_opening():
+    game = Game(4, seed=4)
+    actions = game.legal_actions()
+    choice = PhasedBot(board_aware_opening(DEFAULT_OPENING_PARAMS)).choose(game, actions)
+    assert game.node_pips[choice & 255] == max(game.node_pips[a & 255] for a in actions)
+
+
+def test_scarcity_makes_a_resource_in_drought_worth_more():
+    # With only scarcity switched on, a board-poor resource should pull the pick toward it.
+    game = Game(4, seed=4)
+    supply = [0] * 5
+    for h, r in enumerate(game.hex_res):
+        if r >= 0:
+            supply[r] += {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1}[game.hex_num[h]]
+    scarce = min(range(5), key=lambda r: supply[r])
+    params = dict(DEFAULT_OPENING_PARAMS, scarcity=2.5)
+    actions = game.legal_actions()
+    plain = PhasedBot(board_aware_opening(DEFAULT_OPENING_PARAMS)).choose(game, actions) & 255
+    aware = PhasedBot(board_aware_opening(params)).choose(game, actions) & 255
+
+    def scarce_pips(node):
+        return sum(1 for h in opening_search_node_hexes(node) if game.hex_res[h] == scarce)
+
+    assert scarce_pips(aware) >= scarce_pips(plain)
+
+
+def opening_search_node_hexes(node):
+    from src.engine.topology import NODE_HEXES
+
+    return NODE_HEXES[node]
+
+
+def test_second_settlement_fills_gaps_left_by_the_first():
+    params = dict(DEFAULT_OPENING_PARAMS, new_resource=5.0)
+    bot = PhasedBot(board_aware_opening(params))
+    game = Game(2, seed=12)
+    while game.phase in (SETUP_SETTLE, SETUP_ROAD):
+        game.apply(bot.choose(game, game.legal_actions()))
+    for p in range(2):
+        first, second = game.settlements[p]
+        res_first = {game.hex_res[h] for h in opening_search_node_hexes(first) if game.hex_res[h] >= 0}
+        res_second = {game.hex_res[h] for h in opening_search_node_hexes(second) if game.hex_res[h] >= 0}
+        assert res_second - res_first  # the second settlement adds something new
+
+
+def test_search_mutations_stay_in_range_and_search_is_repeatable():
+    import random as _random
+
+    rng = _random.Random(1)
+    params = opening_search.random_params(rng)
+    for _ in range(50):
+        params = opening_search.mutate(params, rng, strength=1.0)
+        for name, (low, high) in OPENING_PARAM_RANGES.items():
+            values = params[name] if name == "weights" else [params[name]]
+            assert all(low <= v <= high for v in values)
+    first = opening_search.search(generations=2, population=6, games=12, survivors=2, seed=3, log=lambda *_: None)
+    second = opening_search.search(generations=2, population=6, games=12, survivors=2, seed=3, log=lambda *_: None)
+    assert first == second and len(first) == 2
+
+
+def test_adaptive_opening_is_registered_and_legal():
+    assert "adaptive" in OPENINGS

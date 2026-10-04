@@ -75,7 +75,14 @@ def _build():
     coastal = sorted((e for e, c in enumerate(edge_hex_count) if c == 1), key=angle_of)
     port_edges = tuple(coastal[i] for i in (0, 3, 6, 10, 13, 16, 20, 23, 26))
 
+    # Two hexes are neighbours when they share an edge, i.e. two corners.
+    hex_neighbors = [
+        tuple(j for j in range(len(hex_nodes)) if j != i and len(set(hex_nodes[i]) & set(hex_nodes[j])) == 2)
+        for i in range(len(hex_nodes))
+    ]
+
     return (
+        tuple(hex_neighbors),
         tuple(hex_nodes),
         tuple(edge_nodes),
         tuple(tuple(x) for x in node_edges),
@@ -86,7 +93,7 @@ def _build():
     )
 
 
-(HEX_NODES, EDGE_NODES, NODE_EDGES, NODE_NEIGHBORS, NODE_HEXES, COASTAL_EDGES, PORT_EDGES) = _build()
+(HEX_NEIGHBORS, HEX_NODES, EDGE_NODES, NODE_EDGES, NODE_NEIGHBORS, NODE_HEXES, COASTAL_EDGES, PORT_EDGES) = _build()
 
 assert len(HEX_NODES) == NUM_HEXES
 assert len(NODE_EDGES) == NUM_NODES
