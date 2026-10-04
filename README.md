@@ -68,24 +68,23 @@ bots = [PhasedBot("balanced"), PhasedBot("random"), PhasedBot("random"), PhasedB
 game = run_game(bots, seed=1)
 ```
 
-To compare openings, one seat uses the opening under test, the other three open at random, and everyone plays at random afterwards. The seat rotates and every opening sees the same seeds.
+Openings compete head to head: every seat in a game uses a different opening, with line-ups and seats shuffled, and everyone plays at random afterwards.
 
 ```bash
-uv run python -m src.engine.openings --games 20000 --workers 16 --plot ../docs
+uv run python -m src.engine.openings --games 100000 --workers 16 --diff --plot ../docs
 ```
 
-![Win rate by opening](docs/openings.png)
+![Openings head to head](docs/openings.png)
 
-| Opening | What it picks | Win rate |
-|---|---|---|
-| `balanced` | Most dice pips, plus a bonus for each different resource | 68.0% |
-| `pips` | Most dice pips | 65.2% |
-| `ore_grain` | Pips weighted toward ore and grain | 60.4% |
-| `port` | Pips plus a bonus for a harbour | 56.7% |
-| `brick_lumber` | Pips weighted toward brick and lumber | 54.6% |
-| `random` | Any legal spot | 24.7% |
+| Opening | What it picks | Head to head | Alone against random openings |
+|---|---|---|---|
+| `balanced` | Most dice pips, plus a bonus for each different resource | 32.9% | 68.0% |
+| `pips` | Most dice pips | 29.1% | 65.2% |
+| `ore_grain` | Pips weighted toward ore and grain | 27.7% | 60.4% |
+| `brick_lumber` | Pips weighted toward brick and lumber | 19.7% | 54.6% |
+| `port` | Pips plus a bonus for a harbour | 15.7% | 56.7% |
 
-Each is 20,000 games, accurate to about 0.7 points. These measure an opening against opponents who open at random, not against each other.
+An even share is 25%. Head-to-head figures come from 100,000 games (about 80,000 per opening) and are accurate to about 0.3 points. `--vs-random` runs the second column on its own.
 
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 

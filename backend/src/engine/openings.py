@@ -1,14 +1,20 @@
 """Compare opening policies.
 
-One seat uses the opening under test; the other three open at random. Everyone
-plays at random after the opening, so any change in that seat's win rate comes
-from where it placed its first two settlements and roads.
+Everyone plays at random after the opening, so differences in win rate come
+from where the first two settlements and roads were placed.
 
-    uv run python -m src.engine.openings --games 20000 --workers 16 --plot ../docs
+Head to head (the default): every seat in a game uses a different opening, so
+the policies compete for the same spots. Line-ups and seats are shuffled.
+
+Against random (``--vs-random``): one seat uses the opening under test and the
+other three open at random.
+
+    uv run python -m src.engine.openings --games 100000 --workers 16 --diff --plot ../docs
 """
 import argparse
 import math
 import os
+import random
 import time
 from multiprocessing import Pool
 
@@ -28,6 +34,49 @@ def _play_batch(args):
             finished += 1
             wins += game.winner == seat
     return opening, wins, finished
+
+
+def _tournament_batch(args):
+    openings, seeds, num_players = args
+    plays = {name: 0 for name in openings}
+    wins = {name: 0 for name in openings}
+    points = {name: 0 for name in openings}
+    for seed in seeds:
+        # A different opening in every seat, drawn and ordered by the seed.
+        lineup = random.Random(seed * 7919 + 1).sample(openings, num_players)
+        game = run_game([PhasedBot(name) for name in lineup], seed)
+        if game.winner < 0:
+            continue
+        for seat, name in enumerate(lineup):
+            plays[name] += 1
+            points[name] += game.victory_points(seat)
+        wins[lineup[game.winner]] += 1
+    return plays, wins, points
+
+
+def tournament(openings, games, num_players=4, workers=1, seed=0):
+    """Play openings against each other, a different one in every seat.
+
+    Returns {opening: (wins, games played, total points)}.
+    """
+    openings = list(openings)
+    if len(openings) < num_players:
+        raise ValueError(f"need at least {num_players} openings to fill every seat")
+    seeds = range(seed, seed + games)
+    chunk = max(1, games // (max(workers, 1) * 4))
+    jobs = [(openings, seeds[i:i + chunk], num_players) for i in range(0, games, chunk)]
+    totals = {name: [0, 0, 0] for name in openings}
+    if workers <= 1:
+        results = list(map(_tournament_batch, jobs))
+    else:
+        with Pool(workers) as pool:
+            results = pool.map(_tournament_batch, jobs)
+    for plays, wins, points in results:
+        for name in openings:
+            totals[name][0] += wins[name]
+            totals[name][1] += plays[name]
+            totals[name][2] += points[name]
+    return {name: tuple(v) for name, v in totals.items()}
 
 
 def compare(openings, games, num_players=4, workers=1, seed=0):
@@ -61,14 +110,15 @@ def summarize(totals, num_players):
     """Rows of (opening, win rate, 95% margin, lift over an even share), best first."""
     even = 1 / num_players
     rows = []
-    for opening, (wins, n) in totals.items():
+    for opening, total in totals.items():
+        wins, n = total[0], total[1]
         rate = wins / n
         margin = 1.96 * math.sqrt(rate * (1 - rate) / n)
         rows.append((opening, rate, margin, rate - even))
     return sorted(rows, key=lambda row: -row[1])
 
 
-def plot(rows, num_players, games, path):
+def plot(rows, num_players, path, title, xlabel):
     """Save a bar chart of win rate by opening, with 95% intervals."""
     plt = _pyplot()
     rows = rows[::-1]
@@ -89,41 +139,79 @@ def plot(rows, num_players, games, path):
                     textcoords="offset points", va="center", color=_INK, fontsize=9, fontweight="bold")
     ax.set_xlim(0, max(r + m for r, m in zip(rates, margins)) * 1.15)
     ax.xaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")
-    ax.set_xlabel("Win rate of the seat using the opening (bars show the 95% interval)", color=_MUTED, fontsize=9)
-    ax.set_title(f"Win rate by opening: {games:,} games each, random play after the opening",
-                 loc="left", color=_INK, fontsize=11, fontweight="bold", pad=16)
+    ax.set_xlabel(xlabel, color=_MUTED, fontsize=9)
+    ax.set_title(title, loc="left", color=_INK, fontsize=11, fontweight="bold", pad=16)
     fig.tight_layout()
     fig.savefig(path, facecolor=_SURFACE)
     plt.close(fig)
 
 
 def main():
+    competitors = sorted(name for name in OPENINGS if name != "random")
     parser = argparse.ArgumentParser(description="Compare opening policies")
-    parser.add_argument("--games", type=int, default=5000, help="games per opening")
+    parser.add_argument("--games", type=int, default=5000,
+                        help="games in the tournament, or games per opening with --vs-random")
     parser.add_argument("--players", type=int, default=4, choices=(2, 3, 4))
     parser.add_argument("--workers", type=int, default=1, help=f"processes to use (this machine has {os.cpu_count()})")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--openings", nargs="*", default=sorted(OPENINGS), choices=sorted(OPENINGS))
-    parser.add_argument("--plot", metavar="DIR", help="save openings.png here (needs matplotlib)")
+    parser.add_argument("--openings", nargs="*", default=competitors, choices=sorted(OPENINGS))
+    parser.add_argument("--vs-random", action="store_true",
+                        help="test each opening alone against three random openings instead")
+    parser.add_argument("--diff", action="store_true",
+                        help="after the tournament, also run --vs-random and show both side by side")
+    parser.add_argument("--plot", metavar="DIR", help="save a chart here (needs matplotlib)")
     args = parser.parse_args()
+    even = 1 / args.players
+    after = "random play after the opening"
+
+    if args.vs_random:
+        start = time.perf_counter()
+        rows = summarize(compare(args.openings, args.games, args.players, args.workers, args.seed), args.players)
+        elapsed = time.perf_counter() - start
+        print(f"Against random openings: {args.games} games per opening, {args.workers} worker(s), {elapsed:.1f} s")
+        print()
+        print(f"  {'opening':<14}{'win rate':>10}{'+/-':>8}{'vs even':>10}")
+        for opening, rate, margin, lift in rows:
+            print(f"  {opening:<14}{rate:>10.1%}{margin:>8.1%}{lift:>+10.1%}")
+        if args.plot:
+            os.makedirs(args.plot, exist_ok=True)
+            path = os.path.join(args.plot, "openings_vs_random.png")
+            plot(rows, args.players, path, f"Win rate against random openings: {args.games:,} games each, {after}",
+                 "Win rate of the seat using the opening (bars show the 95% interval)")
+            print()
+            print(f"  chart   {path}")
+        return
 
     start = time.perf_counter()
-    totals = compare(args.openings, args.games, args.players, args.workers, args.seed)
+    totals = tournament(args.openings, args.games, args.players, args.workers, args.seed)
     elapsed = time.perf_counter() - start
     rows = summarize(totals, args.players)
-    played = args.games * len(args.openings)
-
-    print(f"{args.games} games per opening, {args.players} players, {args.workers} worker(s)")
-    print(f"  time    {elapsed:.1f} s   ({played / elapsed:,.0f} games/s)")
-    print(f"\n  {'opening':<14}{'win rate':>10}{'+/-':>8}{'vs even':>10}")
+    print(f"Head to head: {args.games} games, a different opening in every seat, {args.workers} worker(s)")
+    print(f"  time    {elapsed:.1f} s   ({args.games / elapsed:,.0f} games/s)")
+    print()
+    print(f"  {'opening':<14}{'games':>8}{'win rate':>10}{'+/-':>8}{'vs even':>10}{'avg points':>12}")
     for opening, rate, margin, lift in rows:
-        print(f"  {opening:<14}{rate:>10.1%}{margin:>8.1%}{lift:>+10.1%}")
+        wins, played, points = totals[opening]
+        print(f"  {opening:<14}{played:>8}{rate:>10.1%}{margin:>8.1%}{lift:>+10.1%}{points / played:>12.2f}")
 
     if args.plot:
         os.makedirs(args.plot, exist_ok=True)
         path = os.path.join(args.plot, "openings.png")
-        plot(rows, args.players, args.games, path)
-        print(f"\n  chart   {path}")
+        plot(rows, args.players, path, f"Openings head to head: {args.games:,} games, {after}",
+             "Win rate when every seat uses a different opening (bars show the 95% interval)")
+        print()
+        print(f"  chart   {path}")
+
+    if args.diff:
+        per_opening = max(1, args.games // len(args.openings))
+        solo = {r[0]: r for r in summarize(
+            compare(args.openings, per_opening, args.players, args.workers, args.seed), args.players)}
+        print()
+        print(f"Head to head, next to each opening alone against three random openings ({per_opening} games each)")
+        print(f"  {'opening':<14}{'head to head':>14}{'rank':>6}{'vs random':>12}{'rank':>6}")
+        solo_rank = {name: i + 1 for i, name in enumerate(sorted(solo, key=lambda n: -solo[n][1]))}
+        for i, (opening, rate, _, lift) in enumerate(rows):
+            print(f"  {opening:<14}{rate:>14.1%}{i + 1:>6}{solo[opening][1]:>12.1%}{solo_rank[opening]:>6}")
 
 
 if __name__ == "__main__":

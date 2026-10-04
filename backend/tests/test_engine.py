@@ -552,3 +552,14 @@ def test_opening_comparison_counts_every_game_and_is_repeatable():
     assert totals == opening_experiment.compare(["random", "pips"], games=40, seed=1)
     rows = opening_experiment.summarize(totals, 4)
     assert rows[0][1] >= rows[1][1]
+
+
+def test_tournament_fills_every_seat_with_a_different_opening():
+    names = ["pips", "balanced", "ore_grain", "brick_lumber", "port"]
+    totals = opening_experiment.tournament(names, games=60, seed=2)
+    assert set(totals) == set(names)
+    assert sum(wins for wins, _, _ in totals.values()) == 60  # one winner per game
+    assert sum(played for _, played, _ in totals.values()) == 60 * 4
+    assert totals == opening_experiment.tournament(names, games=60, seed=2)
+    with pytest.raises(ValueError):
+        opening_experiment.tournament(["pips", "balanced"], games=1)
