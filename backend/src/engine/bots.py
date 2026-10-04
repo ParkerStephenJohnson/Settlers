@@ -470,6 +470,62 @@ OPENING_PARAM_RANGES = {
 }
 
 
+def spot_value(game, params, p):
+    """A function scoring any node for player p on this board. See board_aware_opening."""
+    weights = params["weights"]
+    scarcity = params["scarcity"]
+    variety = params["variety"]
+    new_resource = params["new_resource"]
+    number_variety = params["number_variety"]
+    harbor = params["harbor"]
+    harbor_match = params["harbor_match"]
+    hex_res = game.hex_res
+    hex_num = game.hex_num
+    port_of_node = game.port_of_node
+
+    # Surpluses and droughts: total pips of each resource on this board.
+    supply = [0] * 5
+    for h, r in enumerate(hex_res):
+        if r >= 0:
+            supply[r] += PIPS[hex_num[h]]
+    mean = sum(supply) / 5
+    worth = [weights[r] * (mean / supply[r]) ** scarcity for r in range(5)]
+
+    # What this player already produces from its settlements and cities.
+    mine = [0] * 5
+    for node in game.settlements[p] + game.cities[p]:
+        for h in NODE_HEXES[node]:
+            r = hex_res[h]
+            if r >= 0:
+                mine[r] += PIPS[hex_num[h]]
+
+    def value(node):
+        total = 0.0
+        produced = [0] * 5
+        numbers = set()
+        for h in NODE_HEXES[node]:
+            r = hex_res[h]
+            if r >= 0:
+                pips = PIPS[hex_num[h]]
+                total += pips * worth[r]
+                produced[r] += pips
+                numbers.add(hex_num[h])
+        for r in range(5):
+            if produced[r]:
+                total += variety
+                if not mine[r]:
+                    total += new_resource
+        total += number_variety * len(numbers)
+        port = port_of_node[node]
+        if port == 5:
+            total += harbor
+        elif port >= 0:
+            total += harbor_match * (mine[port] + produced[port])
+        return total
+
+    return value
+
+
 def board_aware_opening(params):
     """An opening that values each spot by reading the board in front of it.
 
@@ -479,58 +535,12 @@ def board_aware_opening(params):
     gaps, and it values a 2:1 harbour by how much of that resource the player
     would have to trade.
     """
-    weights = params["weights"]
-    scarcity = params["scarcity"]
-    variety = params["variety"]
-    new_resource = params["new_resource"]
-    number_variety = params["number_variety"]
-    harbor = params["harbor"]
-    harbor_match = params["harbor_match"]
 
     def policy(game, actions):
-        hex_res = game.hex_res
-        hex_num = game.hex_num
-        port_of_node = game.port_of_node
-
-        # Surpluses and droughts: total pips of each resource on this board.
-        supply = [0] * 5
-        for h, r in enumerate(hex_res):
-            if r >= 0:
-                supply[r] += PIPS[hex_num[h]]
-        mean = sum(supply) / 5
-        worth = [weights[r] * (mean / supply[r]) ** scarcity for r in range(5)]
-
-        # What this player already produces from settlements placed so far.
-        mine = [0] * 5
-        for node in game.settlements[game.current]:
-            for h in NODE_HEXES[node]:
-                r = hex_res[h]
-                if r >= 0:
-                    mine[r] += PIPS[hex_num[h]]
+        score = spot_value(game, params, game.current)
 
         def value(game, node):
-            total = 0.0
-            produced = [0] * 5
-            numbers = set()
-            for h in NODE_HEXES[node]:
-                r = hex_res[h]
-                if r >= 0:
-                    pips = PIPS[hex_num[h]]
-                    total += pips * worth[r]
-                    produced[r] += pips
-                    numbers.add(hex_num[h])
-            for r in range(5):
-                if produced[r]:
-                    total += variety
-                    if not mine[r]:
-                        total += new_resource
-            total += number_variety * len(numbers)
-            port = port_of_node[node]
-            if port == 5:
-                total += harbor
-            elif port >= 0:
-                total += harbor_match * (mine[port] + produced[port])
-            return total
+            return score(node)
 
         if game.phase == SETUP_SETTLE:
             return _best(game, actions, value)

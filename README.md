@@ -122,6 +122,28 @@ An even share is 25%. The first figure is one seat using the behavior against th
 
 Trading supports two table conventions beyond plain offers: a responder can answer with a counter-offer, and a player can declare or lift an embargo that stops all trade with another player.
 
+**The standard bot:** a `StrategyBot` has a policy for every decision, so no seat plays at random. `STANDARD` is the reference configuration. An experiment changes one behavior in one seat and plays it against three standard bots; clear winners are adopted and everything is tested again.
+
+```bash
+uv run python -m src.engine.rounds --games 10000 --rounds 3 --workers 16 --plot ../docs
+```
+
+| Behavior | Standard | What the rounds showed |
+|---|---|---|
+| Opening | `adaptive` | Not varied in these rounds |
+| Spending | `points_first` | No stable winner: whichever of city-first and settlement-first the other seats are not using wins about 27 to 31% |
+| Build location | `value` | About the same as plain pips |
+| Development cards | `eager` | Holding knights back costs about a point; never playing cards costs 15 |
+| Proposing trades | `escalate` | Offer one for one, then two for one. What works depends on how opponents answer |
+| Bank trades | `goal` | Never trading with the bank costs 7 to 14 points |
+| Answering trades | `goal` | Accept what brings the next purchase closer. Judging trades by card count alone loses badly |
+| Robber | `rank_weighted` | Block production in proportion to each owner's points |
+| Discards | `keep_goal` | About the same as discarding the biggest pile |
+
+![Round 3](docs/rounds_3.png)
+
+Four standard bots finish a game in about 70 turns.
+
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 
 Using it from Python:
