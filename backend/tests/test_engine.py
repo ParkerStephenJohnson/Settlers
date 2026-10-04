@@ -563,3 +563,71 @@ def test_tournament_fills_every_seat_with_a_different_opening():
     assert totals == opening_experiment.tournament(names, games=60, seed=2)
     with pytest.raises(ValueError):
         opening_experiment.tournament(["pips", "balanced"], games=1)
+
+
+from src.engine import opening_search  # noqa: E402
+from src.engine.bots import DEFAULT_OPENING_PARAMS, OPENING_PARAM_RANGES, board_aware_opening  # noqa: E402
+
+
+def test_board_aware_opening_with_default_settings_is_the_pips_opening():
+    game = Game(4, seed=4)
+    actions = game.legal_actions()
+    choice = PhasedBot(board_aware_opening(DEFAULT_OPENING_PARAMS)).choose(game, actions)
+    assert game.node_pips[choice & 255] == max(game.node_pips[a & 255] for a in actions)
+
+
+def test_scarcity_makes_a_resource_in_drought_worth_more():
+    # With only scarcity switched on, a board-poor resource should pull the pick toward it.
+    game = Game(4, seed=4)
+    supply = [0] * 5
+    for h, r in enumerate(game.hex_res):
+        if r >= 0:
+            supply[r] += {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1}[game.hex_num[h]]
+    scarce = min(range(5), key=lambda r: supply[r])
+    params = dict(DEFAULT_OPENING_PARAMS, scarcity=2.5)
+    actions = game.legal_actions()
+    plain = PhasedBot(board_aware_opening(DEFAULT_OPENING_PARAMS)).choose(game, actions) & 255
+    aware = PhasedBot(board_aware_opening(params)).choose(game, actions) & 255
+
+    def scarce_pips(node):
+        return sum(1 for h in opening_search_node_hexes(node) if game.hex_res[h] == scarce)
+
+    assert scarce_pips(aware) >= scarce_pips(plain)
+
+
+def opening_search_node_hexes(node):
+    from src.engine.topology import NODE_HEXES
+
+    return NODE_HEXES[node]
+
+
+def test_second_settlement_fills_gaps_left_by_the_first():
+    params = dict(DEFAULT_OPENING_PARAMS, new_resource=5.0)
+    bot = PhasedBot(board_aware_opening(params))
+    game = Game(2, seed=12)
+    while game.phase in (SETUP_SETTLE, SETUP_ROAD):
+        game.apply(bot.choose(game, game.legal_actions()))
+    for p in range(2):
+        first, second = game.settlements[p]
+        res_first = {game.hex_res[h] for h in opening_search_node_hexes(first) if game.hex_res[h] >= 0}
+        res_second = {game.hex_res[h] for h in opening_search_node_hexes(second) if game.hex_res[h] >= 0}
+        assert res_second - res_first  # the second settlement adds something new
+
+
+def test_search_mutations_stay_in_range_and_search_is_repeatable():
+    import random as _random
+
+    rng = _random.Random(1)
+    params = opening_search.random_params(rng)
+    for _ in range(50):
+        params = opening_search.mutate(params, rng, strength=1.0)
+        for name, (low, high) in OPENING_PARAM_RANGES.items():
+            values = params[name] if name == "weights" else [params[name]]
+            assert all(low <= v <= high for v in values)
+    first = opening_search.search(generations=2, population=6, games=12, survivors=2, seed=3, log=lambda *_: None)
+    second = opening_search.search(generations=2, population=6, games=12, survivors=2, seed=3, log=lambda *_: None)
+    assert first == second and len(first) == 2
+
+
+def test_adaptive_opening_is_registered_and_legal():
+    assert "adaptive" in OPENINGS

@@ -78,13 +78,29 @@ uv run python -m src.engine.openings --games 100000 --workers 16 --diff --plot .
 
 | Opening | What it picks | Head to head | Alone against random openings |
 |---|---|---|---|
-| `balanced` | Most dice pips, plus a bonus for each different resource | 32.9% | 68.0% |
-| `pips` | Most dice pips | 29.1% | 65.2% |
-| `ore_grain` | Pips weighted toward ore and grain | 27.7% | 60.4% |
-| `brick_lumber` | Pips weighted toward brick and lumber | 19.7% | 54.6% |
-| `port` | Pips plus a bonus for a harbour | 15.7% | 56.7% |
+| `adaptive` | Reads the board; settings found by search | 36.0% | 74.9% |
+| `balanced` | Most dice pips, plus a bonus for each different resource | 29.6% | 68.0% |
+| `pips` | Most dice pips | 26.2% | 65.2% |
+| `ore_grain` | Pips weighted toward ore and grain | 25.0% | 60.4% |
+| `brick_lumber` | Pips weighted toward brick and lumber | 18.3% | 54.6% |
+| `port` | Pips plus a bonus for a harbour | 14.9% | 56.7% |
 
-An even share is 25%. Head-to-head figures come from 100,000 games (about 80,000 per opening) and are accurate to about 0.3 points. `--vs-random` runs the second column on its own.
+An even share is 25%. Head-to-head figures come from 120,000 games (about 80,000 per opening) and are accurate to about 0.3 points. `--vs-random` runs the second column on its own.
+
+**The adaptive opening** values each spot by reading the board in front of it:
+
+- how many pips of each resource the whole board has, so a resource in drought is worth more and one in surplus less
+- what the player's first settlement already produces, so the second fills the gaps
+- 2:1 harbours, by how much of that resource the player would produce
+- how many different resources and dice numbers a spot touches
+
+Its eleven settings were found by an evolution search: each candidate plays one seat against `balanced`, `pips` and `ore_grain`, the best survive and are mutated, and the finalists are re-tested on fresh games.
+
+```bash
+uv run python -m src.engine.opening_search --generations 8 --population 24 --games 2500 --workers 16
+```
+
+The search put the most weight on covering resources the player does not have yet and on variety, valued ore and grain above brick and lumber and wool lowest, used scarcity moderately, and gave harbours little weight.
 
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 

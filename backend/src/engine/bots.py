@@ -400,6 +400,117 @@ def _port(game, node):
     return game.node_pips[node] + (3.0 if game.port_of_node[node] >= 0 else 0.0)
 
 
+# Settings for board_aware_opening. Each one is a knob the search can turn.
+DEFAULT_OPENING_PARAMS = {
+    # Base worth of a pip of brick, lumber, ore, grain, wool.
+    "weights": [1.0, 1.0, 1.0, 1.0, 1.0],
+    # How strongly to favour resources the board is short of (0 ignores it).
+    "scarcity": 0.0,
+    # Bonus for each different resource a spot touches.
+    "variety": 0.0,
+    # Bonus for each resource a spot adds that the player does not produce yet.
+    "new_resource": 0.0,
+    # Bonus for each different number a spot touches.
+    "number_variety": 0.0,
+    # Bonus for a 3:1 harbour.
+    "harbor": 0.0,
+    # Bonus for a 2:1 harbour, per pip of that resource the player would produce.
+    "harbor_match": 0.0,
+}
+
+OPENING_PARAM_RANGES = {
+    "weights": (0.2, 2.5),
+    "scarcity": (0.0, 2.5),
+    "variety": (0.0, 5.0),
+    "new_resource": (0.0, 5.0),
+    "number_variety": (0.0, 3.0),
+    "harbor": (0.0, 4.0),
+    "harbor_match": (0.0, 1.0),
+}
+
+
+def board_aware_opening(params):
+    """An opening that values each spot by reading the board in front of it.
+
+    It measures how many pips of each resource the whole board has, so a
+    resource in drought is worth more and one in surplus less. It knows what
+    the player's first settlement already produces, so the second can fill the
+    gaps, and it values a 2:1 harbour by how much of that resource the player
+    would have to trade.
+    """
+    weights = params["weights"]
+    scarcity = params["scarcity"]
+    variety = params["variety"]
+    new_resource = params["new_resource"]
+    number_variety = params["number_variety"]
+    harbor = params["harbor"]
+    harbor_match = params["harbor_match"]
+
+    def policy(game, actions):
+        hex_res = game.hex_res
+        hex_num = game.hex_num
+        port_of_node = game.port_of_node
+
+        # Surpluses and droughts: total pips of each resource on this board.
+        supply = [0] * 5
+        for h, r in enumerate(hex_res):
+            if r >= 0:
+                supply[r] += PIPS[hex_num[h]]
+        mean = sum(supply) / 5
+        worth = [weights[r] * (mean / supply[r]) ** scarcity for r in range(5)]
+
+        # What this player already produces from settlements placed so far.
+        mine = [0] * 5
+        for node in game.settlements[game.current]:
+            for h in NODE_HEXES[node]:
+                r = hex_res[h]
+                if r >= 0:
+                    mine[r] += PIPS[hex_num[h]]
+
+        def value(game, node):
+            total = 0.0
+            produced = [0] * 5
+            numbers = set()
+            for h in NODE_HEXES[node]:
+                r = hex_res[h]
+                if r >= 0:
+                    pips = PIPS[hex_num[h]]
+                    total += pips * worth[r]
+                    produced[r] += pips
+                    numbers.add(hex_num[h])
+            for r in range(5):
+                if produced[r]:
+                    total += variety
+                    if not mine[r]:
+                        total += new_resource
+            total += number_variety * len(numbers)
+            port = port_of_node[node]
+            if port == 5:
+                total += harbor
+            elif port >= 0:
+                total += harbor_match * (mine[port] + produced[port])
+            return total
+
+        if game.phase == SETUP_SETTLE:
+            return _best(game, actions, value)
+        return _road_toward(game, actions, value)
+
+    return policy
+
+
+# Found by src.engine.opening_search: 8 generations of 24 candidates, 2,500
+# games each, against balanced, pips and ore_grain. Re-tested on 30,000 fresh
+# games it won 33.1% from one seat, where an even share is 25%.
+ADAPTIVE_OPENING_PARAMS = {
+    "weights": [1.96, 1.73, 2.48, 2.32, 1.25],  # brick, lumber, ore, grain, wool
+    "scarcity": 0.45,
+    "variety": 4.21,
+    "new_resource": 5.0,
+    "number_variety": 1.0,
+    "harbor": 0.96,
+    "harbor_match": 0.07,
+}
+
 OPENINGS = {
     "random": opening_random,
     # Most dice pips: the spots that produce most often.
@@ -412,6 +523,9 @@ OPENINGS = {
     "brick_lumber": _opening(_brick_lumber),
     # Pips plus a bonus for sitting on a harbour.
     "port": _opening(_port),
+    # Reads the board: droughts and surpluses, what the first settlement
+    # already covers, and harbours that fit. Settings found by search.
+    "adaptive": board_aware_opening(ADAPTIVE_OPENING_PARAMS),
 }
 
 
@@ -424,8 +538,9 @@ class PhasedBot:
     """
 
     def __init__(self, opening="random", play=None):
-        self.opening_name = opening
-        self.opening = OPENINGS[opening]
+        # ``opening`` is a name from OPENINGS or any (game, actions) -> action function.
+        self.opening_name = opening if isinstance(opening, str) else getattr(opening, "__name__", "custom")
+        self.opening = OPENINGS[opening] if isinstance(opening, str) else opening
         self.play = play or RandomBot()
         self.lists_offers = self.play.lists_offers
 
