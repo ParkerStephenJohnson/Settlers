@@ -2,13 +2,14 @@
 
 [![CI](https://github.com/ParkerStephenJohnson/Settlers/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkerStephenJohnson/Settlers/actions/workflows/ci.yml)
 
-A Catan board simulator: a Python API that generates boards and a React app that draws them.
+A Catan rules engine and strategy lab. It plays complete games fast, so strategies can be compared over hundreds of thousands of games, one decision at a time.
 
 ![A generated Catan board](docs/board.png)
 
 ## What it does today
 
-- **Game engine:** plays complete games of Catan from setup to a 10-point win, with every decision made by chance, at about 115 games per second on one core
+- **Game engine:** plays complete games of Catan from setup to a 10-point win, following the official rules, at over 1,000 games per second on a 16-core desktop
+- **Strategy lab:** every kind of decision (opening, spending, building, trading, the robber and more) is a swappable policy. Experiments change one policy in one seat and measure the effect on win rate
 - **Board API:** generates a classic 19-hex board in the 3-4-5-4-3 layout and serves it as JSON from FastAPI
 - **Web app:** renders the board as SVG in the browser, with red 6s and 8s and the robber starting on the desert
 
@@ -49,7 +50,7 @@ Rules follow the official CATAN base game rulebook (2020 edition), including pla
 
 **Trading between players:** on your turn you can offer any bundle of cards for any other bundle, as many times as you like. Players holding everything you asked for answer in seat order, and if several accept you pick one. An offer that was just turned down cannot be repeated until a trade goes through or the turn ends. Gifts and swaps of the same resource are not allowed. A responder can counter with different terms, which the proposer accepts or refuses. A player can embargo another on its own turn; while either side embargoes the other they cannot trade.
 
-**Not covered yet:** the official harbour positions (harbours are spaced evenly with shuffled types).
+Harbours sit on the nine slots of the official frame, with their types shuffled each game.
 
 **Players:**
 
@@ -130,7 +131,7 @@ uv run python -m src.engine.rounds --games 10000 --rounds 3 --workers 16 --plot 
 
 | Behavior | Standard | What the rounds showed |
 |---|---|---|
-| Opening | `adaptive` | Best of six, alone (25.0% against 24.4% for the next) and in a mixed field (34.7%) |
+| Opening | `adaptive_v2` | The adaptive opening re-tuned with standard play after it. Beat `adaptive` 27.3% to 25.0% from one seat and won a mixed field of seven openings (33.8%) |
 | Spending | `nearest` | Go for whichever of a city and a settlement needs fewer cards. Level with settlement-first; nothing beats either |
 | Build location | `value` | About the same as plain pips |
 | Development cards | `eager` | Holding knights back costs about a point; never playing cards costs 15 |
@@ -142,9 +143,26 @@ uv run python -m src.engine.rounds --games 10000 --rounds 3 --workers 16 --plot 
 
 ![Round 4](docs/round4_1.png)
 
+![Round 5: openings with standard play](docs/round5_1.png)
+
 Refusing to trade with the leader, trading only with players behind, and embargoes were each tested on top of the goal rule. None helped: they scored between 22.6% and 25.0% against an even 25%.
 
-Four standard bots finish a game in about 70 turns.
+**Embargoes as a table norm.** One player embargoing the leader changes nothing, so `embargo_study` makes it a norm the whole table follows. The front-runner is the first player to reach 7 public points.
+
+```bash
+uv run python -m src.engine.embargo_study --games 20000 --workers 16
+```
+
+| What the whole table does | Front-runner goes on to win | Turns per game |
+|---|---|---|
+| Trades by goal, no restrictions | 57.7% | 66.3 |
+| Refuses the leader | 53.8% | 67.8 |
+| Embargoes the leader | 52.0% | 68.8 |
+| Embargoes anyone on 7 or more points | 53.4% | 68.4 |
+
+A coordinated embargo cuts the front-runner's chance of winning by about 4 to 6 points. A single player who ignores the norm wins 25.1 to 25.7% against an even 25%, so nobody gains much by breaking it or by keeping it.
+
+Four standard bots finish a game in about 66 turns.
 
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 

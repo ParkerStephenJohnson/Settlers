@@ -211,3 +211,15 @@ def test_mixed_field_tournament_counts_one_winner_per_game():
     assert sum(played for _, played in totals.values()) == 160
     with pytest.raises(ValueError):
         rounds.tournament("build", games=1)
+
+
+def test_embargo_study_counts_games_and_repeats_exactly():
+    from src.engine import embargo_study
+
+    table, deviation = embargo_study.study(games=12, norms=("goal", "goal_embargo_close"), seed=4)
+    assert set(table) == {"goal", "goal_embargo_close"}
+    for games, front_wins, turns, closing, trades in table.values():
+        assert 0 <= front_wins <= games <= 12
+        assert 0 <= closing <= turns
+    assert set(deviation) == {"goal_embargo_close"}  # nobody deviates from the standard itself
+    assert (table, deviation) == embargo_study.study(games=12, norms=("goal", "goal_embargo_close"), seed=4)

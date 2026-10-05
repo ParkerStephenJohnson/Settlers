@@ -562,6 +562,20 @@ ADAPTIVE_OPENING_PARAMS = {
     "harbor_match": 0.07,
 }
 
+# Found by the same search once play after the opening was the standard
+# strategy instead of random (8 generations, 24 candidates, 3,000 games each).
+# Ore and grain count for more, and filling gaps left by the first settlement
+# for much less, than when the rest of the game was random.
+ADAPTIVE_V2_OPENING_PARAMS = {
+    "weights": [1.86, 1.69, 3.13, 2.91, 1.30],  # brick, lumber, ore, grain, wool
+    "scarcity": 0.40,
+    "variety": 4.43,
+    "new_resource": 0.84,
+    "number_variety": 1.01,
+    "harbor": 1.17,
+    "harbor_match": 0.0,
+}
+
 OPENINGS = {
     "random": opening_random,
     # Most dice pips: the spots that produce most often.
@@ -577,6 +591,8 @@ OPENINGS = {
     # Reads the board: droughts and surpluses, what the first settlement
     # already covers, and harbours that fit. Settings found by search.
     "adaptive": board_aware_opening(ADAPTIVE_OPENING_PARAMS),
+    # The same reading of the board, tuned with standard play after the opening.
+    "adaptive_v2": board_aware_opening(ADAPTIVE_V2_OPENING_PARAMS),
 }
 
 

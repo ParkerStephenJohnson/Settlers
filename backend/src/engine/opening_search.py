@@ -1,7 +1,7 @@
 """Search for better settings of the board-aware opening.
 
 A simple evolution strategy. Each candidate plays one seat against the current
-best named openings, with random play after the opening. The best candidates
+best named openings, with standard play after the opening. The best candidates
 survive and are mutated to make the next generation. Every generation uses
 fresh seeds and re-tests the survivors, so a lucky score does not stick.
 
@@ -18,12 +18,12 @@ from .bots import (
     ADAPTIVE_OPENING_PARAMS,
     DEFAULT_OPENING_PARAMS,
     OPENING_PARAM_RANGES,
-    PhasedBot,
     board_aware_opening,
 )
 from .simulate import run_game
+from .strategy import StrategyBot
 
-DEFAULT_FIELD = ("adaptive", "balanced", "pips")
+DEFAULT_FIELD = ("adaptive", "ore_grain", "balanced")
 
 
 def _evaluate_batch(args):
@@ -34,8 +34,10 @@ def _evaluate_batch(args):
         rng = random.Random(seed * 104729 + 7)
         seat = rng.randrange(num_players)
         rivals = [field[rng.randrange(len(field))] for _ in range(num_players - 1)]
-        bots = [PhasedBot(name) for name in rivals]
-        bots.insert(seat, PhasedBot(candidate))
+        # Everyone plays the standard strategy after the opening, so a
+        # candidate is judged by how its start works out in a real game.
+        bots = [StrategyBot(opening=name) for name in rivals]
+        bots.insert(seat, StrategyBot(opening=candidate))
         game = run_game(bots, seed)
         if game.winner >= 0:
             finished += 1

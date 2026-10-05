@@ -61,8 +61,7 @@ def _build():
         for n in nodes:
             node_hexes[n].append(h)
 
-    # Coastal edges border exactly one hex. Walk them in order around the
-    # board and place the nine ports with the 3-3-4 spacing of the real board.
+    # Coastal edges border exactly one hex. Walk them in order around the board.
     mid_x = sum(x for x, _ in centers) / len(centers)
     mid_y = sum(y for _, y in centers) / len(centers)
 
@@ -73,7 +72,9 @@ def _build():
         return math.atan2(y, x)
 
     coastal = sorted((e for e, c in enumerate(edge_hex_count) if c == 1), key=angle_of)
-    port_edges = tuple(coastal[i] for i in (0, 3, 6, 10, 13, 16, 20, 23, 26))
+    # The nine harbour slots of the official frame. Twelve of their eighteen
+    # corners touch a single hex and six touch two.
+    port_edges = tuple(coastal[i] for i in (1, 4, 7, 11, 14, 17, 21, 24, 27))
 
     # Two hexes are neighbours when they share an edge, i.e. two corners.
     hex_neighbors = [
