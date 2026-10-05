@@ -186,17 +186,19 @@ uv run python -m src.engine.league --games 60000 --workers 16
 
 ![Round 6](docs/round6_1.png)
 
-The league plays whole strategies against each other, a different one in every seat (60,000 games):
+A search over all nine planner settings, with three `prizes` bots as the opposition, then found `prizes_v2`, which won 29.5% from one seat on 30,000 fresh games. It is the standard plan. Compared with `prizes` it values cities and Largest Army more, waits less for big targets, and discounts spots an opponent will reach first.
+
+The league plays whole strategies against each other, a different one in every seat (60,000 games, with `prizes` as the standard plan):
 
 | Strategy | Win rate |
 |---|---|
-| `standard` | 32.3% |
+| `standard` | 34.6% |
 | `no_plan` | 30.3% |
-| `spoiler`: blocks spots, embargoes and robs whoever is ahead | 29.3% |
-| `expansion` | 26.9% |
-| `roads` | 20.0% |
-| `cities` | 19.3% |
-| `cards` | 17.0% |
+| `spoiler`: blocks spots, embargoes and robs whoever is ahead | 28.0% |
+| `expansion` | 25.9% |
+| `cities` | 19.5% |
+| `roads` | 18.6% |
+| `cards` | 17.9% |
 
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 

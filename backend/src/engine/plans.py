@@ -212,4 +212,10 @@ PLAN = {
     "army": Planner(**dict(_TUNED, army_value=20.0)),
     "road": Planner(**dict(_TUNED, road_value=30.0)),
     "prizes": Planner(**dict(_TUNED, army_value=20.0, road_value=30.0)),
+    # Found by plan_search over all nine settings against three "prizes" bots
+    # (6 generations, 20 candidates, 2,500 games each). Re-tested on 30,000
+    # fresh games it won 29.5% from one seat. Against "prizes" it values
+    # cities and Largest Army more, waits less, and avoids races it would lose.
+    "prizes_v2": Planner(reach=3, city_value=3.36, dev_value=3.0, patience=0.9, army_value=35.7,
+                         road_value=20.7, road_reach=2, contest=0.54, block=0.16),
 }

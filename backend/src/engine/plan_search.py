@@ -17,23 +17,33 @@ from .plans import Planner
 from .simulate import run_game
 from .strategy import STANDARD, StrategyBot
 
-# name: (low, high). reach is rounded to a whole number of roads.
+# name: (low, high). reach and road_reach are rounded to whole roads.
 RANGES = {
     "reach": (1, 4),
     "city_value": (0.5, 5.0),
     "dev_value": (0.0, 25.0),
     "patience": (0.5, 8.0),
+    "army_value": (0.0, 60.0),
+    "road_value": (0.0, 80.0),
+    "road_reach": (1, 4),
+    "contest": (0.0, 0.9),
+    "block": (0.0, 1.0),
 }
+_PRIZES = {"reach": 3, "city_value": 1.75, "dev_value": 0.3, "patience": 2.0, "army_value": 20.0,
+           "road_value": 30.0, "road_reach": 2, "contest": 0.0, "block": 0.0}
 START = [
-    {"reach": 2, "city_value": 2.0, "dev_value": 8.0, "patience": 2.0},
-    {"reach": 2, "city_value": 3.0, "dev_value": 8.0, "patience": 2.0},
-    {"reach": 3, "city_value": 1.5, "dev_value": 8.0, "patience": 2.0},
+    dict(_PRIZES),
+    dict(_PRIZES, road_value=45.0, road_reach=3),
+    dict(_PRIZES, army_value=35.0),
+    dict(_PRIZES, block=0.3),
 ]
 
 
 def make(params):
     return Planner(reach=int(round(params["reach"])), city_value=params["city_value"],
-                   dev_value=params["dev_value"], patience=params["patience"])
+                   dev_value=params["dev_value"], patience=params["patience"],
+                   army_value=params["army_value"], road_value=params["road_value"],
+                   road_reach=int(round(params["road_reach"])), contest=params["contest"], block=params["block"])
 
 
 def _batch(args):

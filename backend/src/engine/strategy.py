@@ -493,6 +493,11 @@ CATEGORIES = {
     "discard": DISCARDS,
 }
 
+# Behaviors no longer tested by default. With a plan, the planner decides what
+# to buy and every spending order scores the same; the order is only used by
+# a bot whose plan is "none".
+RETIRED = {"spend"}
+
 # The reference bot, after five rounds of src.engine.rounds (10,000 games per
 # variant). No single change to it wins more than an even share:
 #   - spend: nearest and settle_first are level and nothing beats either
@@ -510,7 +515,8 @@ STANDARD = {
     "robber": "rank_weighted",
     "discard": "keep_goal",
     # Round 6: going for Longest Road and Largest Army beat the plain plan 32.1% to 24.9%.
-    "plan": "prizes",
+    # A search over all the planner's settings then beat that plan 29.5% to an even 25%.
+    "plan": "prizes_v2",
 }
 
 
