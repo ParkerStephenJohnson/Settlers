@@ -14,7 +14,7 @@ import time
 from multiprocessing import Pool
 
 from .simulate import _BLUE, _INK, _MUTED, _SURFACE, _pyplot, _style, run_game
-from .strategy import CATEGORIES, STANDARD, StrategyBot
+from .strategy import CATEGORIES, RETIRED, STANDARD, StrategyBot
 
 
 def _batch(args):
@@ -165,7 +165,8 @@ def report(results, base, num_players):
 
 def main():
     parser = argparse.ArgumentParser(description="A/B test behaviors against the standard bot")
-    parser.add_argument("--categories", nargs="*", default=list(CATEGORIES), choices=list(CATEGORIES))
+    parser.add_argument("--categories", nargs="*", default=[c for c in CATEGORIES if c not in RETIRED],
+                        choices=list(CATEGORIES))
     parser.add_argument("--games", type=int, default=4000, help="games per variant")
     parser.add_argument("--rounds", type=int, default=1,
                         help="after each round, adopt the clear winners as the new standard and test again")
