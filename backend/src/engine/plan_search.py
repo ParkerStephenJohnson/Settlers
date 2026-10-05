@@ -1,8 +1,10 @@
 """Search for better planner settings.
 
 The same evolution strategy as opening_search. Each candidate planner plays one
-seat against three standard bots; the best survive and are mutated. Every
-generation uses fresh seeds, and the finalists are re-tested on unseen games.
+seat against three opponents drawn from a mixed table of the best plans so
+far, so the result is not tuned to beat one opponent. The best survive and are
+mutated. Every generation uses fresh seeds, and the finalists are re-tested on
+unseen games.
 
     uv run python -m src.engine.plan_search --generations 8 --population 24 --games 3000 --workers 16
 """
@@ -28,14 +30,24 @@ RANGES = {
     "road_reach": (1, 4),
     "contest": (0.0, 0.9),
     "block": (0.0, 1.0),
+    "endgame_at": (0, 9),
+    "cutoff": (0.0, 1.5),
+    "cut_road": (0.0, 40.0),
 }
+# Opponents are drawn from these plans.
+FIELD = ("endgame7", "prizes_v2", "prizes", "cutoff")
 _PRIZES = {"reach": 3, "city_value": 1.75, "dev_value": 0.3, "patience": 2.0, "army_value": 20.0,
-           "road_value": 30.0, "road_reach": 2, "contest": 0.0, "block": 0.0}
+           "road_value": 30.0, "road_reach": 2, "contest": 0.0, "block": 0.0, "endgame_at": 0,
+           "cutoff": 0.0, "cut_road": 0.0}
+_V2 = {"reach": 3, "city_value": 3.36, "dev_value": 3.0, "patience": 0.9, "army_value": 35.7,
+       "road_value": 20.7, "road_reach": 2, "contest": 0.54, "block": 0.16, "endgame_at": 0,
+       "cutoff": 0.0, "cut_road": 0.0}
 START = [
-    dict(_PRIZES),
-    dict(_PRIZES, road_value=45.0, road_reach=3),
-    dict(_PRIZES, army_value=35.0),
-    dict(_PRIZES, block=0.3),
+    dict(_V2, endgame_at=7),
+    dict(_V2, endgame_at=7, cutoff=0.5),
+    dict(_PRIZES, endgame_at=7, cutoff=0.5),
+    dict(_PRIZES, endgame_at=7),
+    dict(_V2, cutoff=0.5),
 ]
 
 
@@ -43,7 +55,9 @@ def make(params):
     return Planner(reach=int(round(params["reach"])), city_value=params["city_value"],
                    dev_value=params["dev_value"], patience=params["patience"],
                    army_value=params["army_value"], road_value=params["road_value"],
-                   road_reach=int(round(params["road_reach"])), contest=params["contest"], block=params["block"])
+                   road_reach=int(round(params["road_reach"])), contest=params["contest"], block=params["block"],
+                   endgame_at=int(round(params["endgame_at"])), cutoff=params["cutoff"],
+                   cut_road=params["cut_road"])
 
 
 def _batch(args):
@@ -52,7 +66,8 @@ def _batch(args):
     planner = make(params)
     for seed in seeds:
         seat = seed % num_players
-        bots = [StrategyBot(**base) for _ in range(num_players)]
+        rng = random.Random(seed * 104729 + 11)
+        bots = [StrategyBot(**dict(base, plan=FIELD[rng.randrange(len(FIELD))])) for _ in range(num_players)]
         bots[seat] = StrategyBot(**dict(base, plan=planner))
         game = run_game(bots, seed)
         if game.winner >= 0:
@@ -62,7 +77,7 @@ def _batch(args):
 
 
 def evaluate(candidates, games, base=None, workers=1, seed=0, num_players=4, pool=None):
-    """Win rate of each candidate from one seat against three bots using ``base``."""
+    """Win rate of each candidate from one seat against three bots with plans drawn from FIELD."""
     base = dict(base or STANDARD)
     seeds = range(seed, seed + games)
     chunk = max(1, games // 4)
@@ -133,7 +148,7 @@ def main():
     args = parser.parse_args()
 
     print(f"{args.population} candidates x {args.games} games x {args.generations} generations, "
-          f"each in one seat against three standard bots")
+          f"each in one seat against three bots with plans drawn from {', '.join(FIELD)}")
     finalists = search(args.generations, args.population, args.games, args.survivors, None, args.workers, args.seed)
     top = [params for _, params in finalists[:3]]
     rates = evaluate(top, args.confirm_games, None, args.workers, seed=args.seed + 900_000_000)

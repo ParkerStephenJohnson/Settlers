@@ -290,4 +290,12 @@ PLAN = {
     "cutthroat": Planner(**dict(_PRIZES_V2, cutoff=0.5, cut_road=15.0)),
     # The two round 8 gains together; not yet tested as a pair.
     "endgame7_cutoff": Planner(**dict(_PRIZES_V2, endgame_at=7, cutoff=0.5)),
+    # Found by plan_search over all twelve settings against a mixed table of
+    # endgame7, prizes_v2, prizes and cutoff (6 generations, 20 candidates,
+    # 2,000 games each). Re-tested on 20,000 fresh games it won 30.6% from one
+    # seat. Not yet compared with the named plans on the same games, so it is
+    # not the standard.
+    "mixed_table": Planner(reach=3, city_value=2.11, dev_value=0.0, patience=0.94, army_value=30.75,
+                           road_value=15.32, road_reach=3, contest=0.45, block=0.1, endgame_at=8,
+                           cutoff=0.02, cut_road=5.32),
 }
