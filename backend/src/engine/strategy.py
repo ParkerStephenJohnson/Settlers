@@ -11,6 +11,7 @@ A StrategyBot has one policy per behavior:
     trade     how to answer offers and counter-offers, and whom to embargo
     robber    where to move the robber and whom to rob
     discard   which cards to give up on a 7
+    plan      a target several steps away that the behaviors above work toward
 
 STANDARD is the reference bot. An experiment changes one behavior in one seat
 and plays it against STANDARD in the other seats. Randomness is used only to
@@ -18,6 +19,8 @@ break exact ties.
 """
 from .behaviors import (
     ROBBING,
+    _robber_scored,
+    _score_rank_weighted,
     TRADING,
     TradePolicy,
     _embargo_close,
@@ -44,6 +47,7 @@ from .game import (
     DISCARD,
     FREE_ROAD,
     MAIN,
+    PIPS,
     ROBBER,
     ROLL,
     SETUP_ROAD,
@@ -51,7 +55,8 @@ from .game import (
     TRADE_PICK,
     TRADE_RESPONSE,
 )
-from .topology import EDGE_NODES, HEX_NODES, NODE_NEIGHBORS
+from .plans import PLAN
+from .topology import EDGE_NODES, HEX_NODES, NODE_HEXES, NODE_NEIGHBORS
 
 COSTS = {
     "city": (0, 0, 3, 2, 0),
@@ -346,8 +351,14 @@ DISCARDS = {
 # judges a trade by whether it brings the bot's own next purchase closer.
 
 
+def _goal_cost(game, p, order):
+    """The cards p is working toward: its published plan, or its next purchase."""
+    cost = game.goals[p]
+    return cost if cost is not None else COSTS.get(next_purchase(game, p, order) or "", None)
+
+
 def _closer(game, me, order):
-    cost = COSTS.get(next_purchase(game, me, order) or "", None)
+    cost = _goal_cost(game, me, order)
     if cost is None:
         return _gain(game) > 0
     give, get = game.offer
@@ -359,7 +370,7 @@ def _closer(game, me, order):
 
 def _closer_proposer(game, order):
     p = game.current
-    cost = COSTS.get(next_purchase(game, p, order) or "", None)
+    cost = _goal_cost(game, p, order)
     give, get = game.offer
     if cost is None:
         return sum(get) > sum(give)
@@ -386,7 +397,7 @@ def _goal_counter(game, me):
     Give the proposer what it asked for, provided that can be spared, and ask
     in return for one card this player is actually missing.
     """
-    cost = COSTS.get(next_purchase(game, me, _ORDER) or "")
+    cost = _goal_cost(game, me, _ORDER)
     if cost is None:
         return None
     _, get = game.offer
@@ -447,9 +458,30 @@ TRADE = {
 }
 ROBBER_POLICIES = {name: policy for name, policy in ROBBING.items() if policy is not None}
 
+def _score_plan_aware(game, h, victim):
+    """Rank-weighted blocking, plus a preference for robbing whoever produces what the plan lacks."""
+    score = _score_rank_weighted(game, h, victim)
+    p = game.current
+    cost = game.goals[p]
+    if victim >= 0 and cost is not None:
+        hand = game.res[p]
+        hex_res = game.hex_res
+        hex_num = game.hex_num
+        for node in game.settlements[victim] + game.cities[victim]:
+            for hx in NODE_HEXES[node]:
+                r = hex_res[hx]
+                if r >= 0 and cost[r] > hand[r]:
+                    score += 2 * PIPS[hex_num[hx]]  # likely to be holding a card the plan needs
+    return score
+
+
+# Rob with the plan in mind. Uses only what is public: who produces what.
+ROBBER_POLICIES["plan_aware"] = _robber_scored(_score_plan_aware)
+
 OPENING = {name: policy for name, policy in OPENINGS.items() if name != "random"}
 
 CATEGORIES = {
+    "plan": PLAN,
     "opening": OPENING,
     "spend": SPEND,
     "build": BUILD,
@@ -477,6 +509,8 @@ STANDARD = {
     "trade": "goal",
     "robber": "rank_weighted",
     "discard": "keep_goal",
+    # Round 6: going for Longest Road and Largest Army beat the plain plan 32.1% to 24.9%.
+    "plan": "prizes",
 }
 
 
@@ -499,6 +533,8 @@ class StrategyBot:
         self.trade = TRADE[config["trade"]]
         self.robber = ROBBER_POLICIES[config["robber"]]
         self.discard = DISCARDS[config["discard"]]
+        plan = config["plan"]  # a name from PLAN, or a Planner
+        self.planner = PLAN[plan] if isinstance(plan, str) else plan
 
     def order(self, game, p):
         spend = self._spend
@@ -530,7 +566,7 @@ class StrategyBot:
             return self.robber(game, actions)
         if phase == DISCARD:
             p = game.discarder
-            return self.discard(game, p, actions, COSTS.get(next_purchase(game, p, self.order(game, p)) or ""))
+            return self.discard(game, p, actions, self._goal(game, p))
         if phase == FREE_ROAD:
             return self.build(game, game.current, A_ROAD, actions)
         return actions[0]
@@ -547,6 +583,8 @@ class StrategyBot:
         accept, reject = actions
         me = game.responder
         trade = self.trade
+        if self.planner is not None:
+            self._goal(game, me)  # refresh the published plan before judging the offer
         if trade.respond(game, me):
             return accept
         if trade.counter is not None:
@@ -556,6 +594,14 @@ class StrategyBot:
                 if counter:
                     return counter
         return reject
+
+    def _goal(self, game, p):
+        """The cards p is working toward, published on game.goals when there is a plan."""
+        if self.planner is None:
+            return COSTS.get(next_purchase(game, p, self.order(game, p)) or "")
+        plan = self.planner.plan(game, p)
+        game.goals[p] = plan.cost if plan else None
+        return game.goals[p]
 
     # ---------------------------------------------------------------- the turn
 
@@ -578,19 +624,31 @@ class StrategyBot:
         for a in actions:
             by_kind.setdefault(_kind(a), []).append(a)
 
-        # 2. Buy the first thing in the spending order that is affordable.
-        order = self.order(game, p)
-        for item in order:
-            options = by_kind.get(_KIND[item])
-            if options:
-                return options[0] if item == "dev" else self.build(game, p, _KIND[item], options)
-        needs_road = _needs_road(game, p)
-        if needs_road and A_ROAD in by_kind:
-            return self.build(game, p, A_ROAD, by_kind[A_ROAD])
-
-        target = next_purchase(game, p, order)
         hand = game.res[p]
-        cost = COSTS.get(target or "")
+        if self.planner is not None:
+            # 2. Follow the plan: take its next step if it is affordable.
+            plan = self.planner.plan(game, p)
+            cost = game.goals[p] = plan.cost if plan else None
+            if plan and plan.action in actions:
+                return plan.action
+            if not self.planner.strict:
+                # The next step is out of reach for now, so do not sit on cards.
+                for item in self.order(game, p):
+                    options = by_kind.get(_KIND[item])
+                    if options:
+                        return options[0] if item == "dev" else self.build(game, p, _KIND[item], options)
+            needs_road = bool(plan) and plan.step == "road"
+        else:
+            # 2. Buy the first thing in the spending order that is affordable.
+            order = self.order(game, p)
+            for item in order:
+                options = by_kind.get(_KIND[item])
+                if options:
+                    return options[0] if item == "dev" else self.build(game, p, _KIND[item], options)
+            needs_road = _needs_road(game, p)
+            if needs_road and A_ROAD in by_kind:
+                return self.build(game, p, A_ROAD, by_kind[A_ROAD])
+            cost = COSTS.get(next_purchase(game, p, order) or "")
         missing = _missing(hand, cost) if cost else [0] * 5
 
         # 3. Development cards.

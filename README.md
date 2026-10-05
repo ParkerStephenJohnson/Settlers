@@ -164,6 +164,40 @@ A coordinated embargo cuts the front-runner's chance of winning by about 4 to 6 
 
 Four standard bots finish a game in about 66 turns.
 
+**Plans:** a planner picks a target several steps away and every behavior works toward it. It weighs each city it could build, each spot within a few roads, a development card, and a run at Longest Road or Largest Army, then commits to the best value for the cards it is missing. The plan names the next move, such as the next road on the route, and publishes the cards it still needs, which trading, discards and the robber all read.
+
+```bash
+uv run python -m src.engine.plan_search --generations 8 --population 24 --games 3000 --workers 16
+uv run python -m src.engine.rounds --categories plan robber spend --games 10000 --workers 16
+uv run python -m src.engine.league --games 60000 --workers 16
+```
+
+| Plan variant, in one seat against three planning bots | Win rate |
+|---|---|
+| `prizes`: also goes for Longest Road and Largest Army (standard) | 32.1% |
+| `road`: also goes for Longest Road | 30.2% |
+| `army`: also goes for Largest Army | 25.9% |
+| `block`, `contest`: react to where opponents are heading | 24.8 to 25.6% |
+| `tuned`: the plain plan | 24.9% |
+| `none`: no plan | 24.7% |
+| `strict`: saves for the plan and buys nothing else | 22.0% |
+
+10,000 games each, accurate to about 0.9 points. The plain plan won 28.5% against three bots without a plan, but a bot without a plan loses nothing among planners. With a plan, the spending order no longer matters: every order scored 24.9%.
+
+![Round 6](docs/round6_1.png)
+
+The league plays whole strategies against each other, a different one in every seat (60,000 games):
+
+| Strategy | Win rate |
+|---|---|
+| `standard` | 32.3% |
+| `no_plan` | 30.3% |
+| `spoiler`: blocks spots, embargoes and robs whoever is ahead | 29.3% |
+| `expansion` | 26.9% |
+| `roads` | 20.0% |
+| `cities` | 19.3% |
+| `cards` | 17.0% |
+
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 
 Using it from Python:

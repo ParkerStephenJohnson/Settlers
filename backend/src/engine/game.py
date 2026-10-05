@@ -139,7 +139,7 @@ _SIMPLE_OFFERS = [
 class Game:
     __slots__ = (
         "n", "rng", "max_turns", "dev_before_roll", "player_trading", "max_offers",
-        "offers_left", "offers_made", "offer", "player_trades", "embargo", "countered", "countered_offer", "responders", "responder_index", "responder", "acceptors",
+        "offers_left", "offers_made", "offer", "player_trades", "embargo", "countered", "countered_offer", "goals", "responders", "responder_index", "responder", "acceptors",
         "hex_res", "hex_num", "hexes_by_roll", "robber", "node_pips", "port_of_node",
         "node_owner", "node_level", "edge_owner",
         "res", "bank", "rates",
@@ -172,6 +172,7 @@ class Game:
         self.embargo = [0] * n  # embargo[p] has bit q set while p refuses to trade with q
         self.countered = 0  # counter-offers the proposer accepted
         self.countered_offer = None  # the original offer while a counter is considered
+        self.goals = [None] * n  # cards each bot says its current plan needs, if it has one
         self.responders = []
         self.responder_index = 0
         self.responder = -1
