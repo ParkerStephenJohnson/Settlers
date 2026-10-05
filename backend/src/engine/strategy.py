@@ -461,13 +461,14 @@ CATEGORIES = {
     "discard": DISCARDS,
 }
 
-# The reference bot, after four rounds of src.engine.rounds (10,000 games per
+# The reference bot, after five rounds of src.engine.rounds (10,000 games per
 # variant). No single change to it wins more than an even share:
 #   - spend: nearest and settle_first are level and nothing beats either
 #   - trade: goal; refusing or embargoing leaders does not help
-#   - opening: adaptive, also the winner of a mixed field of openings
+#   - opening: adaptive_v2, tuned with standard play; it beat adaptive
+#     27.3% to 25.0% from one seat and won a mixed field of openings
 STANDARD = {
-    "opening": "adaptive",
+    "opening": "adaptive_v2",
     "spend": "nearest",
     "build": "value",
     "dev": "eager",
