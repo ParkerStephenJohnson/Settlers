@@ -44,7 +44,8 @@ def in_main(hands, seed=0, **bot):
 
 
 def move(game, **choices):
-    return StrategyBot(**choices).choose(game, game.legal_actions(False))
+    # These tests check single behaviors, so the planner is switched off unless asked for.
+    return StrategyBot(**dict({"plan": "none"}, **choices)).choose(game, game.legal_actions(False))
 
 
 def test_standard_names_a_real_policy_for_every_behavior():
