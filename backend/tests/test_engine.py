@@ -428,15 +428,19 @@ def test_gifts_and_same_resource_swaps_are_not_allowed():
     assert not game.can_offer(cards(brick=2), cards(brick=1))  # same resource both ways
     assert not game.can_offer(cards(brick=1, wool=1), cards(wool=1, ore=1))
     assert not game.can_offer(cards(brick=4), cards(ore=1))  # more than the hand holds
-    assert not game.can_offer(cards(brick=1), cards(grain=1))  # nobody has grain
+    # Nobody has grain, but a player cannot see that, so the offer is allowed and falls flat.
+    assert game.can_offer(cards(brick=1), cards(grain=1))
+    game.apply(offer_action(cards(brick=1), cards(grain=1)))
+    assert game.phase == MAIN and game.responders == []
 
 
 def test_listed_offers_are_one_and_two_for_one():
     game = _trading_game([cards(brick=2), cards(brick=1, ore=1), EMPTY, EMPTY])
-    assert sorted(_listed_offers(game)) == sorted([
-        (cards(brick=1), cards(ore=1)),
-        (cards(brick=2), cards(ore=1)),
-    ])
+    # Every other resource is listed, whether or not anyone holds it.
+    expected = []
+    for wanted in (cards(lumber=1), cards(ore=1), cards(grain=1), cards(wool=1)):
+        expected += [(cards(brick=1), wanted), (cards(brick=2), wanted)]
+    assert sorted(_listed_offers(game)) == sorted(expected)
 
 
 def test_player_trading_can_be_turned_off():

@@ -200,6 +200,23 @@ The league plays whole strategies against each other, a different one in every s
 | `roads` | 18.6% |
 | `cards` | 17.9% |
 
+**What bots are allowed to know.** A bot knows only what a player at the table could infer. Production, building, trades, discards and development card purchases are public, so each bot always knows the size of every hand and usually its contents. The one hidden thing is which card a robber steal took when the bot was not part of it; `game.estimate(observer, player)` then spreads the missing card over what the victim was believed to hold, and corrects itself as cards are spent. Opponents' plans are inferred from the board, and only points on the table count toward who is leading. A test fails if strategy code reads an opponent's hand directly.
+
+Round 8 tested the aggressive plays under those rules, one seat against three standard bots, 8,000 games each (accurate to about 1 point):
+
+| Change | Win rate |
+|---|---|
+| From 7 points on, take the cheapest route to ten (`endgame7`) | 28.1% |
+| Take the spot a rival most wants (`cutoff`) | 27.1% |
+| Robber weighs the chance of stealing a needed card (`count_cards`) | 26.7% |
+| Monopoly uses inferred hands (`count` on) | 26.4% |
+| Robber also weighs denying the victim's plan (`deny`) | 26.2% |
+| Refuse a trade that finishes a leader's purchase (`goal_deny`) | 25.5% |
+| Settle to break the Longest Road holder's road (`cut_road`) | 25.5% |
+| The standard bot before this round | 25.5% |
+
+![Round 8](docs/round8_1.png)
+
 **How it stays fast:** board geometry is computed once at import. Game state is flat lists of integers indexed by player, hex, node and edge. Actions are single integers. Games are seeded, so any game can be replayed exactly.
 
 Using it from Python:

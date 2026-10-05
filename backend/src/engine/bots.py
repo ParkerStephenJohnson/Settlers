@@ -75,7 +75,7 @@ class RandomBot:
 
     @staticmethod
     def _random_counter(game, rng):
-        theirs = game.res[game.current]
+        theirs = [int(x + 0.5) for x in game.estimate(game.responder, game.current)]
         mine = game.res[game.responder]
         give = [rng.randrange(theirs[r] + 1) for r in range(5)]
         if not any(give):
@@ -97,10 +97,10 @@ class RandomBot:
         hand = game.res[p]
         if not any(hand):
             return 0
-        others = [q for q in range(game.n) if q != p and any(game.res[q]) and not game.embargoed(p, q)]
+        others = [q for q in range(game.n) if q != p and sum(game.res[q]) and not game.embargoed(p, q)]
         if not others:
             return 0
-        theirs = game.res[others[rng.randrange(len(others))]]
+        theirs = [int(x + 0.5) for x in game.estimate(p, others[rng.randrange(len(others))])]
 
         give = [rng.randrange(hand[r] + 1) for r in range(5)]
         if not any(give):
@@ -150,7 +150,7 @@ class GreedyBot:
             return self._respond(game, actions)
         if phase == TRADE_PICK:
             # Trade with whoever is furthest from winning; the last action cancels.
-            return min(actions[:-1], key=lambda a: game.victory_points(a & 255))
+            return min(actions[:-1], key=lambda a: game.public_points(a & 255))
         if phase == SETUP_SETTLE:
             return max(actions, key=lambda a: self._node_value(game, a & 255))
         # SETUP_ROAD and FREE_ROAD
@@ -175,7 +175,7 @@ class GreedyBot:
     def _respond(self, game, actions):
         accept, reject = actions
         proposer = game.current
-        if game.victory_points(proposer) >= 8:
+        if game.public_points(proposer) >= 8:
             return reject
         me = game.responder
         goal = self._goal(game, me)
@@ -263,7 +263,7 @@ class GreedyBot:
                 elif o >= 0:
                     score += pips * node_level[node]
             if victim >= 0:
-                score += 2 + game.victory_points(victim)
+                score += 2 + game.public_points(victim)
             if score > best_score:
                 best_score = score
                 best = a

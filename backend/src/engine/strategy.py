@@ -235,6 +235,18 @@ DEV = {
 # ------------------------------------------------------------------ propose
 
 
+def _plausible_offer(game, give, get):
+    """The offer, if what the bot has inferred says someone may hold the cards asked for."""
+    p = game.current
+    for q in range(game.n):
+        if q != p and not game.embargoed(p, q):
+            est = game.estimate(p, q)
+            if all(est[r] >= get[r] - 0.5 for r in range(5) if get[r]):
+                return game.try_offer(give, get)
+    return 0
+
+
+
 def _propose_none(game, hand, cost, missing, spare):
     return 0
 
@@ -249,7 +261,7 @@ def _singles(ratio):
                     if missing[t]:
                         get = [0] * 5
                         get[t] = 1
-                        offer = game.try_offer(give, get)
+                        offer = _plausible_offer(game, give, get)
                         if offer:
                             return offer
         return 0
@@ -266,7 +278,7 @@ def _propose_bundle(game, hand, cost, missing, spare):
             take = min(spare[r], left)
             give[r] = take
             left -= take
-        offer = game.try_offer(give, missing)
+        offer = _plausible_offer(game, give, missing)
         if offer:
             return offer
     return _singles(1)(game, hand, cost, missing, spare)
@@ -405,7 +417,7 @@ def _goal_counter(game, me):
     if any(get[r] and hand[r] - get[r] < cost[r] for r in range(5)):
         return None
     missing = _missing(hand, cost)
-    theirs = game.res[game.current]
+    theirs = game.estimate(me, game.current)  # what it has inferred the proposer holds
     for r in sorted(range(5), key=lambda r: -missing[r]):
         if missing[r] and theirs[r] and not get[r]:
             give = [0] * 5
@@ -420,6 +432,26 @@ def _leads(game):
 
 def _close(game):
     return game.public_points(game.current) >= 7
+
+
+def _inferred_goal(game, q):
+    """What q is most likely saving for, judged from the board alone."""
+    return COSTS.get(next_purchase(game, q, _CITY_FIRST) or "")
+
+
+def _completes_their_plan(game):
+    """Whether the offer would give a proposer near victory everything their plan still lacks."""
+    proposer = game.current
+    if game.public_points(proposer) < 7:
+        return False
+    cost = _inferred_goal(game, proposer)
+    if cost is None:
+        return False
+    give, get = game.offer
+    hand = game.estimate(game.responder, proposer)
+    before = sum(max(0, cost[r] - hand[r]) for r in range(5))
+    after = sum(max(0, cost[r] - (hand[r] - give[r] + get[r])) for r in range(5))
+    return before > 0.5 and after < 0.5
 
 
 def _goal_policy(refuse=None, counter=None, embargo=None):
@@ -453,6 +485,8 @@ TRADE = {
     "goal_embargo_leader": _goal_policy(embargo=_embargo_leader),
     # As goal, and embargo anyone within three points of winning.
     "goal_embargo_close": _goal_policy(embargo=_embargo_close),
+    # As goal, but never hand a player on 7 or more points the last cards their plan needs.
+    "goal_deny": _goal_policy(refuse=lambda game, me: _completes_their_plan(game)),
     # Counter, and embargo anyone within three points of winning.
     "goal_counter_embargo": _goal_policy(counter=_goal_counter, embargo=_embargo_close),
 }
@@ -478,9 +512,57 @@ def _score_plan_aware(game, h, victim):
 # Rob with the plan in mind. Uses only what is public: who produces what.
 ROBBER_POLICIES["plan_aware"] = _robber_scored(_score_plan_aware)
 
+
+def _score_count_cards(game, h, victim):
+    """Rank-weighted blocking, plus the chance that the stolen card is one the plan needs.
+
+    Uses game.estimate: the hand as the robber can infer it from play, not
+    the hand itself.
+    """
+    score = _score_rank_weighted(game, h, victim)
+    p = game.current
+    cost = game.goals[p]
+    if victim >= 0 and cost is not None:
+        mine = game.res[p]
+        theirs = game.estimate(p, victim)
+        total = sum(theirs)
+        if total:
+            useful = sum(theirs[r] for r in range(5) if cost[r] > mine[r])
+            score += 30.0 * useful / total
+    return score
+
+
+ROBBER_POLICIES["count_cards"] = _robber_scored(_score_count_cards)
+
+
+def _score_deny(game, h, victim):
+    """As count_cards, plus the chance of taking a card the victim's own plan needs.
+
+    The victim's plan is inferred from the board, and their hand from play.
+    A steal can set them back as well as help the robber, and the setback
+    counts for more against a leader.
+    """
+    score = _score_count_cards(game, h, victim)
+    if victim >= 0:
+        theirs = game.estimate(game.current, victim)
+        total = sum(theirs)
+        cost = _inferred_goal(game, victim)
+        if total and cost is not None:
+            # Cards they hold that their plan will actually spend.
+            needed = sum(min(theirs[r], cost[r]) for r in range(5))
+            score += 30.0 * (needed / total) * (game.public_points(victim) / 10.0)
+    return score
+
+
+ROBBER_POLICIES["deny"] = _robber_scored(_score_deny)
+
 OPENING = {name: policy for name, policy in OPENINGS.items() if name != "random"}
 
+# Whether to use what it has inferred about opponents' hands when choosing a Monopoly resource.
+COUNT = {"off": False, "on": True}
+
 CATEGORIES = {
+    "count": COUNT,
     "plan": PLAN,
     "opening": OPENING,
     "spend": SPEND,
@@ -512,11 +594,14 @@ STANDARD = {
     "propose": "escalate",
     "bank": "goal",
     "trade": "goal",
-    "robber": "rank_weighted",
+    # Round 8: weighing the chance of stealing a card the plan needs, from inferred hands.
+    "robber": "count_cards",
     "discard": "keep_goal",
     # Round 6: going for Longest Road and Largest Army beat the plain plan 32.1% to 24.9%.
     # A search over all the planner's settings then beat that plan 29.5% to an even 25%.
-    "plan": "prizes_v2",
+    # Round 8: from 7 points on, take the cheapest route to ten.
+    "plan": "endgame7",
+    "count": "on",
 }
 
 
@@ -541,6 +626,8 @@ class StrategyBot:
         self.discard = DISCARDS[config["discard"]]
         plan = config["plan"]  # a name from PLAN, or a Planner
         self.planner = PLAN[plan] if isinstance(plan, str) else plan
+        self.counts = COUNT[config["count"]]
+        self._cached = (None, None, None, None)  # game, player, state, plan
 
     def order(self, game, p):
         spend = self._spend
@@ -605,9 +692,21 @@ class StrategyBot:
         """The cards p is working toward, published on game.goals when there is a plan."""
         if self.planner is None:
             return COSTS.get(next_purchase(game, p, self.order(game, p)) or "")
-        plan = self.planner.plan(game, p)
+        plan = self._plan(game, p)
         game.goals[p] = plan.cost if plan else None
         return game.goals[p]
+
+    def _plan(self, game, p):
+        """The planner's choice for p, reused while nothing it depends on has changed."""
+        state = (tuple(game.res[p]), sum(game.roads_left), sum(game.settlements_left), sum(game.cities_left),
+                 len(game.dev_deck), game.longest_road, game.largest_army, tuple(game.knights), tuple(game.road_len),
+                 game.dev_hand[p][0] + game.dev_new[p][0], game.vp_cards[p])
+        cached = self._cached
+        if cached[0] is game and cached[1] == p and cached[2] == state:
+            return cached[3]
+        plan = self.planner.plan(game, p)
+        self._cached = (game, p, state, plan)
+        return plan
 
     # ---------------------------------------------------------------- the turn
 
@@ -633,7 +732,7 @@ class StrategyBot:
         hand = game.res[p]
         if self.planner is not None:
             # 2. Follow the plan: take its next step if it is affordable.
-            plan = self.planner.plan(game, p)
+            plan = self._plan(game, p)
             cost = game.goals[p] = plan.cost if plan else None
             if plan and plan.action in actions:
                 return plan.action
@@ -672,7 +771,19 @@ class StrategyBot:
                     if sum(missing) == 1 and (missing[(a & 255) // 5] or missing[(a & 255) % 5]):
                         return a
                 if A_MONOPOLY in by_kind:
-                    wanted = max(range(5), key=lambda r: missing[r])
+                    if self.counts:
+                        # Take the missing resource opponents hold most of, and
+                        # keep the card if they hold none of what is needed.
+                        held = [0.0] * 5
+                        for q in range(game.n):
+                            if q != p:
+                                est = game.estimate(p, q)
+                                for r in range(5):
+                                    if missing[r]:
+                                        held[r] += est[r]
+                        wanted = max(range(5), key=lambda r: held[r]) if max(held) >= 0.5 else -1
+                    else:
+                        wanted = max(range(5), key=lambda r: missing[r])
                     for a in by_kind[A_MONOPOLY]:
                         if (a & 255) == wanted:
                             return a
