@@ -292,10 +292,12 @@ def test_an_embargo_blocks_trade_in_both_directions_until_lifted():
     assert game.can_offer(cards(brick=1), cards(ore=1))
     game.apply(action(A_EMBARGO, 1))
     assert game.embargoed(0, 1) and game.embargoed(1, 0)
-    assert not game.can_offer(cards(brick=1), cards(ore=1))  # player 1 was the only one with ore
+    game.apply(offer_action(cards(brick=1), cards(ore=1)))
+    assert game.responders == [] and game.phase == MAIN  # the only player with ore is embargoed
     game.apply(action(A_LIFT, 1))
     assert not game.embargoed(0, 1)
-    assert game.can_offer(cards(brick=1), cards(ore=1))
+    game.apply(offer_action(cards(brick=2), cards(ore=1)))
+    assert game.responders == [1]
 
 
 def test_embargoed_players_are_not_asked():

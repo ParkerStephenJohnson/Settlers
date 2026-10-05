@@ -139,7 +139,7 @@ _SIMPLE_OFFERS = [
 class Game:
     __slots__ = (
         "n", "rng", "max_turns", "dev_before_roll", "player_trading", "max_offers",
-        "offers_left", "offers_made", "offer", "player_trades", "embargo", "countered", "countered_offer", "goals", "responders", "responder_index", "responder", "acceptors",
+        "offers_left", "offers_made", "offer", "player_trades", "embargo", "countered", "countered_offer", "goals", "belief_err", "responders", "responder_index", "responder", "acceptors",
         "hex_res", "hex_num", "hexes_by_roll", "robber", "node_pips", "port_of_node",
         "node_owner", "node_level", "edge_owner",
         "res", "bank", "rates",
@@ -173,6 +173,10 @@ class Game:
         self.countered = 0  # counter-offers the proposer accepted
         self.countered_offer = None  # the original offer while a counter is considered
         self.goals = [None] * n  # cards each bot says its current plan needs, if it has one
+        # What each seat cannot see. belief_err[o][q] is how far o's estimate of q's
+        # hand has drifted from the truth. Only a robber steal between two other
+        # players moves it; every other card movement is public.
+        self.belief_err = [[[0.0] * 5 for _ in range(n)] for _ in range(n)]
         self.responders = []
         self.responder_index = 0
         self.responder = -1
@@ -267,6 +271,48 @@ class Game:
             return self.responder
         return self.current
 
+    def estimate(self, observer, q):
+        """What ``observer`` can infer about q's hand, as expected counts by resource.
+
+        Production, building, trades, discards and development cards are all
+        public, so a careful player always knows how many cards each opponent
+        holds. The only thing hidden is which card a robber steal took when
+        the observer was not part of it. After such a steal the estimate
+        spreads the missing card over what the victim was believed to hold.
+        Use this, never ``res`` directly, when a bot reasons about another
+        player's cards.
+        """
+        hand = self.res[q]
+        if observer == q:
+            return [float(x) for x in hand]
+        err = self.belief_err[observer][q]
+        total = sum(hand)
+        if not total:
+            for r in range(5):
+                err[r] = 0.0  # an empty hand is known exactly
+            return [0.0] * 5
+        est = [hand[r] + err[r] for r in range(5)]
+        est = [x if x > 0 else 0.0 for x in est]  # they spent a card we thought was gone
+        spread = sum(est)
+        if spread <= 0:
+            return [total / 5.0] * 5
+        scale = total / spread  # the size of the hand is always known
+        return [x * scale for x in est]
+
+    def _observe_steal(self, thief, victim, card):
+        """Update what the players not involved in a steal believe."""
+        for o in range(self.n):
+            if o == thief or o == victim:
+                continue  # both of them saw the card
+            est = self.estimate(o, victim)
+            total = sum(est)
+            lost = self.belief_err[o][victim]
+            gained = self.belief_err[o][thief]
+            for r in range(5):
+                drift = (1.0 if r == card else 0.0) - est[r] / total
+                lost[r] += drift
+                gained[r] -= drift
+
     def embargoed(self, a, b):
         """Whether a and b cannot trade because either has embargoed the other."""
         embargo = self.embargo
@@ -335,7 +381,9 @@ class Game:
         """Whether the current player may offer the cards ``give`` for the cards ``get``.
 
         Both sides must hand over at least one card (no gifts), no resource may
-        appear on both sides, and someone must hold everything asked for.
+        appear on both sides, and there must be someone to offer it to. Whether
+        anyone actually holds the cards asked for is not checked here: a player
+        cannot see that, and finds out only when nobody accepts.
         """
         return bool(self.try_offer(give, get))
 
@@ -357,15 +405,11 @@ class Game:
         act = offer_action(give, get)
         if act in self.offers_made:
             return 0
-        res = self.res
         embargo = self.embargo
         mine = embargo[p]
         for q in range(self.n):
             if q != p and not (mine >> q) & 1 and not (embargo[q] >> p) & 1:
-                other = res[q]
-                if (other[0] >= get[0] and other[1] >= get[1] and other[2] >= get[2]
-                        and other[3] >= get[3] and other[4] >= get[4]):
-                    return act
+                return act
         return 0
 
     def legal_actions(self, offers=True):
@@ -439,7 +483,7 @@ class Game:
             res = self.res
             made = self.offers_made
             partners = [q for q in range(self.n) if q != p and not self.embargoed(p, q)]
-            wanted = [any(res[q][j] for q in partners) for j in range(5)]
+            wanted = [bool(partners)] * 5
             for i in range(5):
                 have = hand[i]
                 if have:
@@ -643,7 +687,10 @@ class Game:
         self.responders = responders
         self.acceptors = []
         self.responder_index = 0
-        self.responder = self.responders[0]
+        if not responders:
+            self.responder = -1  # nobody holds what was asked for, so the offer falls flat
+            return
+        self.responder = responders[0]
         self.phase = TRADE_RESPONSE
 
     def _next_responder(self, p):
@@ -753,6 +800,7 @@ class Game:
             for r in range(5):
                 pick -= hand[r]
                 if pick < 0:
+                    self._observe_steal(p, victim, r)
                     hand[r] -= 1
                     self.res[p][r] += 1
                     break
