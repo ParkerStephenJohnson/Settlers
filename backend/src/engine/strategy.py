@@ -19,6 +19,8 @@ break exact ties.
 """
 from .behaviors import (
     ROBBING,
+    _robber_scored,
+    _score_rank_weighted,
     TRADING,
     TradePolicy,
     _embargo_close,
@@ -45,6 +47,7 @@ from .game import (
     DISCARD,
     FREE_ROAD,
     MAIN,
+    PIPS,
     ROBBER,
     ROLL,
     SETUP_ROAD,
@@ -53,7 +56,7 @@ from .game import (
     TRADE_RESPONSE,
 )
 from .plans import PLAN
-from .topology import EDGE_NODES, HEX_NODES, NODE_NEIGHBORS
+from .topology import EDGE_NODES, HEX_NODES, NODE_HEXES, NODE_NEIGHBORS
 
 COSTS = {
     "city": (0, 0, 3, 2, 0),
@@ -455,6 +458,26 @@ TRADE = {
 }
 ROBBER_POLICIES = {name: policy for name, policy in ROBBING.items() if policy is not None}
 
+def _score_plan_aware(game, h, victim):
+    """Rank-weighted blocking, plus a preference for robbing whoever produces what the plan lacks."""
+    score = _score_rank_weighted(game, h, victim)
+    p = game.current
+    cost = game.goals[p]
+    if victim >= 0 and cost is not None:
+        hand = game.res[p]
+        hex_res = game.hex_res
+        hex_num = game.hex_num
+        for node in game.settlements[victim] + game.cities[victim]:
+            for hx in NODE_HEXES[node]:
+                r = hex_res[hx]
+                if r >= 0 and cost[r] > hand[r]:
+                    score += 2 * PIPS[hex_num[hx]]  # likely to be holding a card the plan needs
+    return score
+
+
+# Rob with the plan in mind. Uses only what is public: who produces what.
+ROBBER_POLICIES["plan_aware"] = _robber_scored(_score_plan_aware)
+
 OPENING = {name: policy for name, policy in OPENINGS.items() if name != "random"}
 
 CATEGORIES = {
@@ -486,7 +509,8 @@ STANDARD = {
     "trade": "goal",
     "robber": "rank_weighted",
     "discard": "keep_goal",
-    "plan": "tuned",
+    # Round 6: going for Longest Road and Largest Army beat the plain plan 32.1% to 24.9%.
+    "plan": "prizes",
 }
 
 

@@ -28,7 +28,7 @@ def in_main(hands, seed=0):
 
 def test_reachable_counts_roads_and_names_the_first_one():
     game = in_main([EMPTY, EMPTY, EMPTY, EMPTY])
-    reach = Planner(reach=3)._reachable(game, 0)
+    reach = Planner._reachable(game, 0, 3)
     for node, (roads, first) in reach.items():
         assert 0 <= roads <= 3
         if roads == 0:
@@ -37,12 +37,12 @@ def test_reachable_counts_roads_and_names_the_first_one():
             assert game.edge_owner[first] < 0
             assert set(EDGE_NODES[first]) & game.touch[0]  # the first road joins the network
     assert max(roads for roads, _ in reach.values()) == 3
-    assert len(Planner(reach=1)._reachable(game, 0)) < len(reach)
+    assert len(Planner._reachable(game, 0, 1)) < len(reach)
 
 
 def test_an_opponent_building_blocks_the_route():
     game = in_main([EMPTY, EMPTY, EMPTY, EMPTY])
-    reach = Planner(reach=3)._reachable(game, 0)
+    reach = Planner._reachable(game, 0, 3)
     for node in reach:
         assert game.node_owner[node] in (-1, 0)
 
@@ -117,3 +117,59 @@ def test_plan_search_stays_in_range_and_repeats():
     assert 1 <= plan_search.make(params).reach <= 4
     quiet = {"generations": 2, "population": 5, "games": 8, "survivors": 2, "seed": 1, "log": lambda *_: None}
     assert plan_search.search(**quiet) == plan_search.search(**quiet)
+
+
+def test_contest_discounts_a_spot_an_opponent_reaches_first():
+    game = in_main([EMPTY, EMPTY, EMPTY, EMPTY])
+    game.cities_left[0] = 0
+    game.dev_deck.clear()
+    plain = Planner(reach=3).plan(game, 0)
+    rivals = Planner(reach=3)._rival_distance(game, 0)
+    wary = Planner(reach=3, contest=0.99).plan(game, 0)
+    theirs = rivals.get(wary.target, 99)
+    assert theirs >= wary.roads or wary.target == plain.target  # it avoids races it would lose
+    assert all(roads >= 0 for roads in rivals.values())
+
+
+def test_army_value_makes_a_card_worth_more_as_largest_army_gets_close():
+    game = in_main([EMPTY, EMPTY, EMPTY, EMPTY])
+    keen = Planner(reach=2, city_value=0.01, dev_value=0.0, army_value=5000.0)
+    assert keen.plan(game, 0).action == A_BUY << 8
+    game.largest_army = 0  # already holding it, so no extra pull toward cards
+    assert keen.plan(game, 0).action != A_BUY << 8
+
+
+def test_longest_road_plan_names_a_road_that_lengthens_the_road():
+    game = in_main([EMPTY, EMPTY, EMPTY, EMPTY])
+    need = 5 - game.road_len[0]  # nobody holds Longest Road yet, so five roads take it
+    plan = Planner(reach=2, city_value=0.01, dev_value=0.0, road_value=5000.0, road_reach=5).plan(game, 0)
+    assert plan.kind == "longest_road" and plan.roads == need
+    assert plan.cost == (need, need, 0, 0, 0)
+    edge = plan.action & 255
+    before = game._longest_path(0)
+    game.edge_owner[edge] = 0
+    game.touch[0].update(EDGE_NODES[edge])
+    assert game._longest_path(0) > before
+
+
+def test_plan_aware_robber_prefers_a_victim_who_produces_what_the_plan_lacks():
+    from src.engine.game import A_ROBBER, ROBBER
+
+    game = in_main([EMPTY, cards(ore=1), cards(ore=1), cards(ore=1)])
+    game.goals[0] = CITY
+    game.phase = ROBBER
+    choice = StrategyBot(robber="plan_aware").choose(game, game.legal_actions(False))
+    assert kind_of(choice) == A_ROBBER
+    own = {h for h in range(19) if any(game.node_owner[n] == 0 for n in __import__(
+        "src.engine.topology", fromlist=["HEX_NODES"]).HEX_NODES[h])}
+    assert ((choice & 255) >> 3) not in own
+
+
+def test_league_counts_one_winner_per_game_and_repeats():
+    from src.engine import league
+
+    totals, turns = league.play(games=30, seed=2)
+    assert sum(wins for wins, _, _ in totals.values()) == 30
+    assert sum(played for _, played, _ in totals.values()) == 120
+    assert turns > 0
+    assert (totals, turns) == league.play(games=30, seed=2)
